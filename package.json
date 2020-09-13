@@ -1,0 +1,28 @@
+{
+  "name": "raft-node",
+  "version": "1.0.0",
+  "description": "A NodeJS implementation of the RAFT consensus algorithm",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build:proto": "node ./bin/compile_proto"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vasu014/raft-node.git"
+  },
+  "author": "Vasu Bhardwaj",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Vasu014/raft-node/issues"
+  },
+  "homepage": "https://github.com/Vasu014/raft-node#readme",
+  "dependencies": {
+    "@grpc/grpc-js": "^1.1.6",
+    "shelljs": "^0.8.4"
+  },
+  "devDependencies": {
+    "grpc-tools": "^1.9.1",
+    "grpc_tools_node_protoc_ts": "^4.1.4"
+  }
+}
