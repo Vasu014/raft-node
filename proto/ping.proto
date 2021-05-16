@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package ping;
+
+import "google/protobuf/struct.proto";
+
+
+message PingRequest{
+    string pingrequest = 1;
+}
+
+message PingResponse{
+    string pingresponse = 1;
+}
+
+service PingService{
+    rpc SendHeartbeat(PingRequest) returns (PingResponse) {}
+}
