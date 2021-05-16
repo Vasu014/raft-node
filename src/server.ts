@@ -19,9 +19,9 @@ const loadedPackageDefinition = grpc.loadPackageDefinition(packageDefinition) as
  * Service implementation for Ping Service
  */
 const serviceHandler: PingServiceHandlers = {
-    SendHeartbeat: (call, _) => {
+    SendHeartbeat: (call, callback) => {
         console.log('Received PingRequest: ' + JSON.stringify(call.request));
-        return { 'pingresponse': 'ok' };
+        callback(null, { 'pingresponse': 'ok' });
     }
 }
 
@@ -33,8 +33,8 @@ function getServer(): grpc.Server {
     return server;
 }
 
-console.log(__dirname);
 const pingServer = getServer();
 pingServer.bindAsync('0.0.0.0:50051', grpc.ServerCredentials.createInsecure(), () => {
     pingServer.start();
+    console.log('Ping Server.. Listening at: 0.0.0.0:50051');
 });
