@@ -1,9 +1,9 @@
 // Original file: proto/ping.proto
 
-import type * as grpc from '@grpc/grpc-js'
-import type { MethodDefinition } from '@grpc/proto-loader'
-import type { PingRequest as _ping_PingRequest, PingRequest__Output as _ping_PingRequest__Output } from '../ping/PingRequest';
-import type { PingResponse as _ping_PingResponse, PingResponse__Output as _ping_PingResponse__Output } from '../ping/PingResponse';
+import * as grpc from '@grpc/grpc-js'
+import { MethodDefinition } from '@grpc/proto-loader'
+import { PingRequest as _ping_PingRequest, PingRequest__Output as _ping_PingRequest__Output } from '../ping/PingRequest';
+import { PingResponse as _ping_PingResponse, PingResponse__Output as _ping_PingResponse__Output } from '../ping/PingResponse';
 
 export interface PingServiceClient extends grpc.Client {
   SendHeartbeat(argument: _ping_PingRequest, metadata: grpc.Metadata, options: grpc.CallOptions, callback: (error?: grpc.ServiceError, result?: _ping_PingResponse__Output) => void): grpc.ClientUnaryCall;

@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build:proto": "node ./bin/compile_proto"
+    "build:proto": "node ./bin/compile_proto",
+    "run:dev": ""
   },
   "repository": {
     "type": "git",
@@ -21,7 +22,8 @@
     "@grpc/grpc-js": "^1.3.2",
     "@grpc/proto-loader": "^0.6.2",
     "grpc": "^1.24.3",
-    "shelljs": "^0.8.4"
+    "shelljs": "^0.8.4",
+    "typescript": "^4.2.4"
   },
   "devDependencies": {
     "@types/google-protobuf": "^3.7.3",
