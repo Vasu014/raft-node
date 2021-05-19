@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package raft;
+
+import "google/protobuf/struct.proto";
+
+message VoteRequest{
+    int32 term = 1;
+    int32 candidateId = 2;
+    int32 lastLogIndex = 3;
+    int32 lastLogTerm = 4;
+}
+
+message VoteResponse{
+    int32 term = 1;
+    bool voteGranted = 2;
+}
+
+
+message AppendEntryRequest{
+    int32 term = 1;
+    int32 leaderId = 2;
+    int32 prevLogIndex = 3;
+    repeated int32 prevLogEntries = 4;
+    int32 leaderCommit= 5;    
+
+}
+
+message AppendResponse {
+    int32 term = 1;
+    bool success = 2;
+}
+
+service  RaftService{
+    rpc RequestForVote(VoteRequest) returns (VoteResponse) {}
+    rpc AppendEntries(AppendEntryRequest) returns (AppendResponse) {}
+}
+

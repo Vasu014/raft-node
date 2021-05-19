@@ -64,7 +64,7 @@ class RaftServer {
         this.matchIndex = [];
     }
 
-    initializeServer() {
+    initializeServer(): grpc.Server {
         const server = new grpc.Server();
         const serviceHandler = this.createServiceHandlers();
         server.addService(loadedPackageDefinition.ping.PingService.service, {
@@ -74,7 +74,7 @@ class RaftServer {
         return server;
     }
 
-    connectToPeers(ids: number[], ips: string[]) {
+    connectToPeers(ids: number[], ips: string[]): void {
         this.nodeIds = ids.filter(id => id != this.serverId);
         this.nodeIds.forEach(id => {
             console.log('\x1b[34m%s\x1b[0m', 'Server ' + this.serverId + ': Connecting to Node Id: ' + id);
@@ -82,7 +82,7 @@ class RaftServer {
 
     }
 
-    createServiceHandlers() {
+    createServiceHandlers(): PingServiceHandlers {
         const serviceHandler: PingServiceHandlers = {
             SendHeartbeat: (call, callback) => {
                 console.log('Received PingRequest: ' + JSON.stringify(call.request));
@@ -93,7 +93,7 @@ class RaftServer {
 
     }
 
-    startHeartbeats() {
+    startHeartbeats(): void {
         this.heartbeatTimer = setInterval(() => {
             console.log('\x1b[36m%s\x1b[0m','Heartbeat for Server Id: ' + this.serverId);
         }, 1000);
