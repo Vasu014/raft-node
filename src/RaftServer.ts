@@ -17,19 +17,51 @@ const packageDefinition = protoLoader.loadSync(
 
 const loadedPackageDefinition = grpc.loadPackageDefinition(packageDefinition) as unknown as ProtoGrpcType;
 
+enum NodeState{
+    FOLLOWER = 'FOLLOWER',
+    CANDIDATE = 'CANDIDATE',
+    LEADER = 'LEADER'
+}
+
 class RaftServer {
     private serverId: number;
     private nodeIds: number[];
     private idToAddrMap: Map<number, string>;
     private server: grpc.Server;
     private heartbeatTimer: any;
+    private nodeState: NodeState;
+
+    // Persistent state
+    private currentTerm: number;
+    private votedFor: number | null;
+    private log: number[];
+
+    // Volatile state [all servers]
+    private commitIndex: number;
+    private lastApplied: number;
+
+    // Volatile state [leader state only]
+    private nextIndex: number[];
+    private matchIndex: number[];
+
 
     constructor(serverId: number, serverAddr: string) {
         this.serverId = serverId;
         this.server = this.initializeServer();
         this.nodeIds = [];
-        this.idToAddrMap =  new Map<number, string>();
+        this.idToAddrMap = new Map<number, string>();
         this.heartbeatTimer = '';
+        this.nodeState = NodeState.FOLLOWER;
+
+        this.currentTerm = 0;
+        this.votedFor = null;
+        this.log = []
+
+        this.commitIndex = 0;
+        this.lastApplied = 0;
+
+        this.nextIndex = [];
+        this.matchIndex = [];
     }
 
     initializeServer() {
@@ -42,7 +74,11 @@ class RaftServer {
         return server;
     }
 
-    connectToPeers() {
+    connectToPeers(ids: number[], ips: string[]) {
+        this.nodeIds = ids.filter(id => id != this.serverId);
+        this.nodeIds.forEach(id => {
+            console.log('\x1b[34m%s\x1b[0m', 'Server ' + this.serverId + ': Connecting to Node Id: ' + id);
+        })
 
     }
 
@@ -57,9 +93,9 @@ class RaftServer {
 
     }
 
-    startHeartbeats(){
+    startHeartbeats() {
         this.heartbeatTimer = setInterval(() => {
-            console.log('Heartbeat for Server Id: ' + this.serverId);
+            console.log('\x1b[36m%s\x1b[0m','Heartbeat for Server Id: ' + this.serverId);
         }, 1000);
     }
 }
