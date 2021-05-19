@@ -1,10 +1,10 @@
 import * as grpc from '@grpc/grpc-js'
 import * as protoLoader from '@grpc/proto-loader'
-import { ProtoGrpcType } from './grpc-js/proto/ping';
-import { PingServiceHandlers } from './grpc-js/proto/ping/PingService';
+import { ProtoGrpcType } from './grpc-js/proto/raft';
+import { RaftServiceHandlers, RaftServiceClient } from './grpc-js/proto/raft/RaftService';
 import { setInterval } from 'timers';
 
-const PROTO_PATH = './../proto/ping.proto';
+const PROTO_PATH = './../proto/raft.proto';
 const packageDefinition = protoLoader.loadSync(
     __dirname + PROTO_PATH,
     {
@@ -17,7 +17,7 @@ const packageDefinition = protoLoader.loadSync(
 
 const loadedPackageDefinition = grpc.loadPackageDefinition(packageDefinition) as unknown as ProtoGrpcType;
 
-enum NodeState{
+enum NodeState {
     FOLLOWER = 'FOLLOWER',
     CANDIDATE = 'CANDIDATE',
     LEADER = 'LEADER'
@@ -27,7 +27,8 @@ class RaftServer {
     private serverId: number;
     private nodeIds: number[];
     private idToAddrMap: Map<number, string>;
-    private server: grpc.Server;
+    private idToClientMap: Map<number, RaftServiceClient>;
+    private server: grpc.Server = new grpc.Server();
     private heartbeatTimer: any;
     private nodeState: NodeState;
 
@@ -47,9 +48,9 @@ class RaftServer {
 
     constructor(serverId: number, serverAddr: string) {
         this.serverId = serverId;
-        this.server = this.initializeServer();
         this.nodeIds = [];
         this.idToAddrMap = new Map<number, string>();
+        this.idToClientMap = new Map<number, RaftServiceClient>();
         this.heartbeatTimer = '';
         this.nodeState = NodeState.FOLLOWER;
 
@@ -62,41 +63,96 @@ class RaftServer {
 
         this.nextIndex = [];
         this.matchIndex = [];
+
+        this.initializeServer(serverAddr);
     }
 
-    initializeServer(): grpc.Server {
+    initializeServer(addr: string): void {
         const server = new grpc.Server();
         const serviceHandler = this.createServiceHandlers();
-        server.addService(loadedPackageDefinition.ping.PingService.service, {
-            SendHeartbeat: serviceHandler.SendHeartbeat
+        server.addService(loadedPackageDefinition.raft.RaftService.service, {
+            RequestForVote: serviceHandler.RequestForVote,
+            AppendEntries: serviceHandler.AppendEntries
         });
 
-        return server;
+        server.bindAsync(addr, grpc.ServerCredentials.createInsecure(), (err, port) => {
+            server.start();
+            this.server =  server;
+        });
+
     }
 
-    connectToPeers(ids: number[], ips: string[]): void {
-        this.nodeIds = ids.filter(id => id != this.serverId);
+    initiatePeerConnections(peerIds: number[], idAddrMap: Map<number, string>) {
+        this.nodeIds = peerIds.filter(id => id != this.serverId);
         this.nodeIds.forEach(id => {
-            console.log('\x1b[34m%s\x1b[0m', 'Server ' + this.serverId + ': Connecting to Node Id: ' + id);
-        })
+            console.log('Connecting Sevrer ' + this.serverId + ' to Server' + id);
+            const value = idAddrMap.get(id);
+            const clientAddr: string = value != undefined ? value : '';
+            const client = new loadedPackageDefinition.raft.RaftService(clientAddr, grpc.credentials.createInsecure());
+            this.idToClientMap.set(id, client);
+            this.idToAddrMap.set(id, clientAddr);
+        });
 
     }
 
-    createServiceHandlers(): PingServiceHandlers {
-        const serviceHandler: PingServiceHandlers = {
-            SendHeartbeat: (call, callback) => {
-                console.log('Received PingRequest: ' + JSON.stringify(call.request));
-                callback(null, { 'pingresponse': 'PING_OK' });
+    createServiceHandlers() {
+        const serviceHandlers: RaftServiceHandlers = {
+            RequestForVote: (call, cb) => {
+                const request = call.request;
+                if (this.nodeState == NodeState.FOLLOWER) {
+                    console.log('Server ' + this.serverId + ' Received a vote request from ' + request.candidateId);
+                    console.log('Current votedFor: ' + this.votedFor);
+                    if (request.candidateId && (request.candidateId == this.votedFor || this.votedFor == null)) {
+                        this.votedFor = request.candidateId;
+                        cb(null, { term: this.currentTerm, voteGranted: true });
+                    } else {
+                        cb(null, { term: this.currentTerm, voteGranted: false });
+                    }
+
+                } else {
+                    cb(null, { term: this.currentTerm, voteGranted: false });
+                }
+            },
+            AppendEntries: (call, cb) => {
+                // TODO: Implementation Pending
             }
         }
-        return serviceHandler;
 
+        return serviceHandlers;
     }
 
     startHeartbeats(): void {
         this.heartbeatTimer = setInterval(() => {
-            console.log('\x1b[36m%s\x1b[0m','Heartbeat for Server Id: ' + this.serverId);
+            console.log('\x1b[36m%s\x1b[0m', 'Heartbeat for Server Id: ' + this.serverId);
         }, 1000);
+    }
+
+    conductLeaderElection(): void {
+        console.log('Starting Leader election for : ' + this.serverId);
+        const voteCount = [0];
+        this.nodeIds.forEach(id => {
+            const client = this.idToClientMap.get(id);
+            client?.RequestForVote({
+                term: this.currentTerm,
+                candidateId: this.serverId,
+                lastLogIndex: this.commitIndex,
+                lastLogTerm: 0
+            }, (err, result) => {
+                if (err) {
+                    console.error('Received Error' + err);
+                } else {
+                    if (result?.voteGranted) {
+                        voteCount[0] += 1;
+                        if (voteCount[0] >= 2) {
+                            this.nodeState = NodeState.LEADER;
+                            console.log('Leader Elected: ' + this.serverId);
+                        }
+                    }
+                }
+            })
+
+        });
+
     }
 }
 

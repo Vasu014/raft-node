@@ -7,10 +7,16 @@ const serverId = [1, 2, 3, 4];
 const ips = [5001, 5002, 5003, 5004].map(ip => {
     return 'localhost:' + ip.toString()
 });
-const cluster: RaftServer[] = serverId.map(id => {
-    return new RaftServer(id, '');
-})
-    
+const idAddrMap = new Map<number, string>();
+serverId.forEach((val, idx) => {
+    idAddrMap.set(val, ips[idx]);
+});
 
-cluster.forEach(server => server.connectToPeers(serverId, ips));
-cluster.forEach(server => server.startHeartbeats());
+const cluster: RaftServer[] = serverId.map((id, index) => {
+    return new RaftServer(id, ips[index]);
+})
+
+
+
+cluster.forEach(server => server.initiatePeerConnections(serverId, idAddrMap));
+cluster.forEach(server => server.conductLeaderElection());
