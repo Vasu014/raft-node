@@ -20,3 +20,7 @@ const cluster: RaftServer[] = serverId.map((id, index) => {
 
 cluster.forEach(server => server.initiatePeerConnections(serverId, idAddrMap));
 cluster.forEach(server => server.conductLeaderElection());
+
+
+const timer = setTimeout(() => {}, 2000);
+clearTimeout(timer);

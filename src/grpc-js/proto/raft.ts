@@ -19,6 +19,7 @@ export interface ProtoGrpcType {
   raft: {
     AppendEntryRequest: MessageTypeDefinition
     AppendResponse: MessageTypeDefinition
+    LogEntry: MessageTypeDefinition
     RaftService: SubtypeConstructor<typeof grpc.Client, _raft_RaftServiceClient> & { service: _raft_RaftServiceDefinition }
     VoteRequest: MessageTypeDefinition
     VoteResponse: MessageTypeDefinition
