@@ -1,4 +1,5 @@
-import { RaftServer } from './RaftServer';
+import { RaftServer, NodeState } from './RaftServer';
+import { logger } from './logger/Logger';
 import * as dotenv from 'dotenv';
 
 
@@ -17,10 +18,15 @@ const cluster: RaftServer[] = serverId.map((id, index) => {
 })
 
 
+const getLeader = () => {
+    cluster.forEach(server => {
+        if (server.getCurrentState() == NodeState.LEADER) {
+            return server.getId();
+        }
+    })
+}
 
+logger.info('Welcome to RAFT Cluster Module. starting servers, and connecting to peers');
 cluster.forEach(server => server.initiatePeerConnections(serverId, idAddrMap));
-cluster.forEach(server => server.conductLeaderElection());
-
-
-const timer = setTimeout(() => {}, 2000);
-clearTimeout(timer);
+cluster.forEach(async server =>{ server.conductLeaderElection()});
+logger.info('Current Leader: ' + getLeader());

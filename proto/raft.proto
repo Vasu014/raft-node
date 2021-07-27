@@ -39,4 +39,3 @@ service  RaftService{
     rpc RequestForVote(VoteRequest) returns (VoteResponse) {}
     rpc AppendEntries(AppendEntryRequest) returns (AppendResponse) {}
 }
-
