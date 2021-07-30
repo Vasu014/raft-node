@@ -16,15 +16,12 @@ serverId.forEach((val, idx) => {
     idAddrMap.set(val, ips[idx]);
 });
 
-const cluster: RaftServer[] = serverId.map((id, index) => {
-    return new RaftServer(id, ips[index]);
-})
 
 
 
 function hasReachedConsensus(cluster: RaftServer[]) {
     const leaders = cluster.filter((server) => {
-        logger.info('Server ID: ' + server.getId() +', State: ' + server.getCurrentState());
+        logger.info('Server ID: ' + server.getId() + ', State: ' + server.getCurrentState());
         if (server.getCurrentState() === NodeState.LEADER) {
             return server;
         }
@@ -38,6 +35,10 @@ function hasReachedConsensus(cluster: RaftServer[]) {
         setTimeout(() => hasReachedConsensus(cluster), 1000);
     }
 }
+
+const cluster: RaftServer[] = serverId.map((id, index) => {
+    return new RaftServer(id, ips[index]);
+})
 
 logger.info('Welcome to RAFT Cluster Module. starting servers, and connecting to peers');
 cluster.forEach(server => server.initiatePeerConnections(serverId, idAddrMap));

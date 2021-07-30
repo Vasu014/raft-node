@@ -7,4 +7,7 @@ describe('Running RaftServer Node sanity checks', () => {
     it('should have initial state as FOLLOWER', () => {
         expect(server.getCurrentState()).toBe(NodeState.FOLLOWER);
     })
+    it('should have currentTerm === 0', () => {
+        expect(server.getCurrentTerm()).toBe(0);
+    })
 });

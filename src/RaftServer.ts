@@ -4,7 +4,7 @@ import { ProtoGrpcType } from './grpc-js/proto/raft';
 import * as dotenv from 'dotenv';
 import { logger } from './logger/Logger';
 import { RaftServiceHandlers, RaftServiceClient } from './grpc-js/proto/raft/RaftService';
-
+import * as events from 'events';
 
 dotenv.config();
 const PROTO_PATH = './../proto/raft.proto';
@@ -48,76 +48,89 @@ interface LogEntry {
  * 8. Service HeartBeat ( state = NodeState.FOLLOWER or state == NodeState.CANDIDATE)
  * 9. Send HeartBeat ( state = NodeState.LEADER ) 
  * 10. Shutdown
+ * 11. Prepare to lead (initializes all the leader related variables)
  * 
  */
 class RaftServer {
-    private serverId: number;
-    private nodeIds: number[];
-    private idToAddrMap: Map<number, string>;
-    private idToClientMap: Map<number, RaftServiceClient>;
-    private server: grpc.Server = new grpc.Server();
-    private heartbeatTimeout: any;
-    private heartbeatSenderTimeout: any;
-    private electionTimeout: any;
-    private nodeState: NodeState;
+    private _serverId: number;
+    private _nodeIds: number[];
+    private _peerCount: number;
+    private _idToAddrMap: Map<number, string>;
+    private _idToClientMap: Map<number, RaftServiceClient>;
+    private _server: grpc.Server = new grpc.Server();
+    private _heartbeatTimeout: any;
+    private _heartbeatSenderTimeout: any;
+    private _electionTimeout: any;
+    private _nodeState: NodeState;
+    private _emitter: events.EventEmitter;
 
     // Persistent state (Should be updated on stable storage before replying to RPC)
-    private currentTerm: number; // latest term seen by server
-    private votedFor: number | null; // vote for the latest election
-    private log: LogEntry[]; // commands for fsm, {command, term}, 1-indexed
+    private _currentTerm: number; // latest term seen by server
+    private _prevTerm: number;
+    private _votedFor: number | null; // vote for the latest election
+    private _log: LogEntry[]; // commands for fsm, {command, term}, 1-indexed
 
     // Volatile state [all servers]
-    private commitIndex: number; // highest known commit index [0,)
-    private lastApplied: number; // index of highest log applied to fsm [0,)
+    private _commitIndex: number; // highest known commit index [0,)
+    private _lastApplied: number; // index of highest log applied to fsm [0,)
 
     // Volatile state [leader state only]
-    private nextIndex: number[]; // for each server, index of next to be sent, [leader lastLogIndex+1,)
-    private matchIndex: number[]; // for each server, index of highest entry known to be replicated [0,)
+    private _nextIndex: number[]; // for each server, index of next to be sent, [leader lastLogIndex+1,)
+    private _matchIndex: number[]; // for each server, index of highest entry known to be replicated [0,)
 
 
     constructor(serverId: number, serverAddr: string) {
-        this.serverId = serverId;
-        this.nodeIds = [];
-        this.idToAddrMap = new Map<number, string>();
-        this.idToClientMap = new Map<number, RaftServiceClient>();
-        this.nodeState = NodeState.FOLLOWER;
-        this.electionTimeout = -1;
-        this.heartbeatTimeout = -1;
-        this.currentTerm = 0;
-        this.votedFor = null;
-        this.log = []
+        this._serverId = serverId;
+        this._nodeIds = [];
+        this._peerCount = 0;
+        this._idToAddrMap = new Map<number, string>();
+        this._idToClientMap = new Map<number, RaftServiceClient>();
+        this._nodeState = NodeState.FOLLOWER;
+        this._electionTimeout = -1;
+        this._heartbeatTimeout = -1;
+        this._currentTerm = 0;
+        this._prevTerm = 0;
+        this._votedFor = null;
+        this._emitter = new events.EventEmitter();
+        this._log = []
 
-        this.commitIndex = 0;
-        this.lastApplied = 0;
+        this._commitIndex = 0;
+        this._lastApplied = 0;
 
-        this.nextIndex = [];
-        this.matchIndex = [];
-        this.initializeServer(serverAddr);
-        this.resetHeartbeatTimeout();
+        this._nextIndex = [];
+        this._matchIndex = [];
+        this._initializeServer(serverAddr);
+        this._resetHeartbeatTimeout();
 
 
-    }
-
-    logInfo(msg: string): void {
-        logger.info('Server ' + this.serverId + ': ' + msg);
     }
 
     getCurrentState(): NodeState {
-        return this.nodeState;
+        return this._nodeState;
     }
-
 
     getId(): number {
-        return this.serverId;
+        return this._serverId;
     }
 
+    getCurrentTerm(): number {
+        return this._currentTerm;
+    }
+
+    _logInfo(msg: string): void {
+        logger.info('Server ' + this._serverId + ': ' + msg);
+    }
+
+    _logError(msg: string): void {
+        logger.error('Server' + this._serverId + ': ' + msg);
+    }
 
     /**
      * We initialize all the servers in the cluster, and assign them localhost/addresses.
      */
-    initializeServer(addr: string): void {
+    _initializeServer(addr: string): void {
         const server = new grpc.Server();
-        const serviceHandler = this.createServiceHandlers();
+        const serviceHandler = this._createServiceHandlers();
         server.addService(loadedPackageDefinition.raft.RaftService.service, {
             RequestForVote: serviceHandler.RequestForVote,
             AppendEntries: serviceHandler.AppendEntries
@@ -125,65 +138,65 @@ class RaftServer {
 
         server.bindAsync(addr, grpc.ServerCredentials.createInsecure(), (err, port) => {
             server.start();
-            this.server = server;
+            this._server = server;
         });
     }
 
-
     /**
      * Timer which waits for Leader Heartbeat, while server is in FOLLOWER state.
      * On timeout, state change to CANDIDATE and leader-election is initiated
      */
-    resetElectionTimeout() {
+    _resetElectionTimeout() {
         const threshold = process.env.ELECTION_TIMEOUT ? parseInt(process.env.ELECTION_TIMEOUT) : 1000;
-        this.electionTimeout = setTimeout(() => {
-            this.resetElectionTimeout();
+        this._electionTimeout = setTimeout(() => {
+            this._resetElectionTimeout();
         }, threshold);
     }
 
-
     /**
      * Timer which waits for Leader Heartbeat, while server is in FOLLOWER state.
      * On timeout, state change to CANDIDATE and leader-election is initiated
      */
-    resetHeartbeatTimeout() {
+    _resetHeartbeatTimeout() {
         const threshold = process.env.HEARTBEAT_TIMEOUT ? parseInt(process.env.HEARTBEAT_TIMEOUT) : 2000;
-        this.heartbeatTimeout = setTimeout(() => {
-            this.logInfo('Heartbeat timed out. Moving to Candidate and starting election');
-            if (this.nodeState === NodeState.FOLLOWER) {
-                this.nodeState = NodeState.CANDIDATE;
-                this.conductLeaderElection();
+        if (this._heartbeatTimeout !== -1) {
+            clearTimeout(this._heartbeatTimeout);
+        }
+        this._heartbeatTimeout = setTimeout(() => {
+            this._logInfo('Heartbeat timed out. Moving to Candidate and starting election');
+            if (this._nodeState === NodeState.FOLLOWER) {
+                this._nodeState = NodeState.CANDIDATE;
+                this._conductLeaderElection();
             }
         }, threshold);
     }
 
-
-    async sendHeartbeats() {
-        this.logInfo('Sending heartbeats to all peers');
+    async _sendHeartbeats() {
+        this._logInfo('Sending heartbeats to all peers');
         let counter = 0
-        this.nodeIds.forEach(id => {
-            this.logInfo('Sending heartbeat to Server: ' + id);
-            if (!this.idToClientMap.has(id)) {
-                this.logInfo('Error!! No Client present for server id: ' + id);
+        this._nodeIds.forEach(id => {
+            this._logInfo('Sending heartbeat to Server: ' + id);
+            if (!this._idToClientMap.has(id)) {
+                this._logInfo('Error!! No Client present for server id: ' + id);
                 return;
             }
-            const client = this.idToClientMap.get(id);
+            const client = this._idToClientMap.get(id);
             client?.AppendEntries(
                 {
-                    term: this.currentTerm,
-                    leaderId: this.serverId,
-                    prevLogIndex: this.lastApplied,
-                    prevLogTerm: this.currentTerm - 1,
+                    term: this._currentTerm,
+                    leaderId: this._serverId,
+                    prevLogIndex: this._lastApplied,
+                    prevLogTerm: this._currentTerm - 1,
                     entries: []
                 },
                 (err, result) => {
                     if (err) {
-                        this.logInfo('Error while sending heartbeat: ' + err);
+                        this._logInfo('Error while sending heartbeat: ' + err);
                     }
-                    this.logInfo('Received result: ' + JSON.stringify(result));
+                    this._logInfo('Received result: ' + JSON.stringify(result));
                     counter += 1;
-                    if (counter === this.nodeState.length) {
-                        this.heartbeatSenderTimeout = setTimeout(() => this.sendHeartbeats(), 1000);
+                    if (counter === this._nodeIds.length) {
+                        this._heartbeatSenderTimeout = setTimeout(() => this._sendHeartbeats(), 1000);
                     }
                 }
             )
@@ -191,39 +204,46 @@ class RaftServer {
 
     }
 
-
     // Once all servers are up and running, we connect each servers to it's N-1 peers
     initiatePeerConnections(peerIds: number[], idAddrMap: Map<number, string>) {
-        this.nodeIds = peerIds.filter(id => id != this.serverId);
-        this.nodeIds.forEach(id => {
-            this.logInfo('Connecting to Server: ' + id);
+        this._nodeIds = peerIds.filter(id => id != this._serverId);
+        this._nodeIds.forEach(id => {
+            this._logInfo('Connecting to Server: ' + id);
             const value = idAddrMap.get(id);
             const clientAddr: string = value != undefined ? value : '';
             const client: RaftServiceClient = new loadedPackageDefinition.raft.RaftService(clientAddr, grpc.credentials.createInsecure());
-            this.idToClientMap.set(id, client);
-            this.idToAddrMap.set(id, clientAddr);
+            this._idToClientMap.set(id, client);
+            this._idToAddrMap.set(id, clientAddr);
+            this._peerCount += 1;
         });
 
     }
 
+    disconnectAllPeers() {
 
-    // TODO: Use conditional types for typechecking for optional and undefined values
-    createServiceHandlers() {
+    }
+
+    shutDown() {
+
+    }
+
+    // TODO: Use conditional types for typechecking for optional and undefined values                                                        
+    _createServiceHandlers() {
         const serviceHandlers: RaftServiceHandlers = {
             RequestForVote: (call, cb) => {
                 const request = call.request;
-                if (this.nodeState !== NodeState.FOLLOWER) {
-                    this.logInfo('Received a vote request from ' + request.candidateId);
+                if (this._nodeState !== NodeState.FOLLOWER) {
+                    this._logInfo('Received a vote request from ' + request.candidateId);
                     //logger.info('Current votedFor: ' + this.votedFor);
-                    if (request.candidateId && (request.candidateId == this.votedFor || this.votedFor == null)) {
-                        this.votedFor = request.candidateId;
-                        cb(null, { term: this.currentTerm, voteGranted: true });
+                    if (request.candidateId && (request.candidateId == this._votedFor || this._votedFor == null)) {
+                        this._votedFor = request.candidateId;
+                        cb(null, { term: this._currentTerm, voteGranted: true });
                     } else {
-                        cb(null, { term: this.currentTerm, voteGranted: false });
+                        cb(null, { term: this._currentTerm, voteGranted: false });
                     }
 
                 } else {
-                    cb(null, { term: this.currentTerm, voteGranted: false });
+                    cb(null, { term: this._currentTerm, voteGranted: false });
                 }
             },
 
@@ -246,17 +266,17 @@ class RaftServer {
                 const prevLogIndex = request.prevLogIndex ? request.prevLogIndex : -1;
                 const prevLogTerm = request.prevLogTerm ? request.prevLogTerm : -1;
 
-                if (this.nodeState === NodeState.FOLLOWER) {
-                    this.logInfo('Heartbeat received from current leader: ' + request.leaderId);
-                    this.logInfo('Resetting heartbeat timeout');
-                    this.resetHeartbeatTimeout()
-                    cb(null, { term: this.currentTerm, success: true });
-                } else if (this.nodeState === NodeState.CANDIDATE) {
-                    this.nodeState = NodeState.FOLLOWER;
-                    this.logInfo('Heartbeat received from current leader: ' + request.leaderId);
-                    this.logInfo('Moving to FOLLOWER state. Resetting heartbeat timeout');
-                    this.resetHeartbeatTimeout();
-                    cb(null, { term: this.currentTerm, success: true });
+                if (this._nodeState === NodeState.FOLLOWER) {
+                    this._logInfo('Heartbeat received from current leader: ' + request.leaderId);
+                    this._logInfo('Resetting heartbeat timeout');
+                    this._resetHeartbeatTimeout()
+                    cb(null, { term: this._currentTerm, success: true });
+                } else if (this._nodeState === NodeState.CANDIDATE) {
+                    this._nodeState = NodeState.FOLLOWER;
+                    this._logInfo('Heartbeat received from current leader: ' + request.leaderId);
+                    this._logInfo('Moving to FOLLOWER state. Resetting heartbeat timeout');
+                    this._resetHeartbeatTimeout();
+                    cb(null, { term: this._currentTerm, success: true });
                 }
 
             }
@@ -265,52 +285,72 @@ class RaftServer {
         return serviceHandlers;
     }
 
+    async _appendLogHandler() {
 
-    // Write logs to persistent state if conditions are correct
-    // Todo 1: Handle case when leaderTerm/leaderIdx is ahead of your last idx
-    async appendLogs(prevLogIdx: number, prevLogTerm: number, leaderTerm: number, entries: LogEntry[]): Promise<boolean> {
-        const logLength = this.log.length;
-        if (logLength == prevLogIdx + 1 && this.log[logLength - 1].term == prevLogTerm) {
-            this.log = this.log.concat(entries);
-            return true
-        } else {
-            return false;
-        }
     }
 
+    _initiateLeaderState() {
+        this._nodeState = NodeState.LEADER;
+        //TODO: initialize commitIndexes, nextIndexes for each peer server as well
+        this._prevTerm = this._currentTerm;
+        if (this._heartbeatSenderTimeout == null) {
+            this._heartbeatSenderTimeout = setTimeout(() => this._sendHeartbeats(), 1000);
+        }
+
+        this._logInfo('Moved to  state: LEADER');
+    }
 
     // Leader election logic. Election is conducted when server moves to CANDIDATE state. 
-    async conductLeaderElection(): Promise<void> {
-        this.logInfo('Starting Leader election');
-        this.currentTerm += 1;
-        this.votedFor = null; //Ideally this should be self, and heartbeat timeouts should be random to prevent clashes.
+    async _conductLeaderElection(): Promise<void> {
+        this._logInfo('Starting Leader election');
+        if (this._prevTerm == this._currentTerm) {
+            this._currentTerm += 1;
+        }
+        //TODO: Make this equal self id and randomize heartbeat timeouts to prevent deadlock elections.
+        this._votedFor = null;
         const voteCount = [1];
+        this._electionTimeout = setTimeout(() => this._conductLeaderElection(), 2000);
         try {
-            this.nodeIds.forEach(id => {
-                const client = this.idToClientMap.get(id);
+            this._nodeIds.forEach(id => {
+                const client = this._idToClientMap.get(id);
                 client?.RequestForVote({
-                    term: this.currentTerm,
-                    candidateId: this.serverId,
-                    lastLogIndex: this.commitIndex,
+                    term: this._currentTerm,
+                    candidateId: this._serverId,
+                    lastLogIndex: this._commitIndex,
                     lastLogTerm: 0
                 }, (err, result) => {
                     if (err) {
-                        console.error('Received Error' + err);
+                        this._logError('Received Error in gRPC Reply' + err);
                     } else {
-                        if (result?.voteGranted) {
+                        //TODO: Save individual votes during current election cycle
+                        if (result?.term === undefined || result?.voteGranted === undefined) {
+                            throw new Error('RPC Reply Term or voteGranted is undefined');
+                        }
+                        const resultTerm = result?.term ? result.term : -1;
+                        const voteGranted = result?.voteGranted ? result.voteGranted : false;
+
+                        if (resultTerm > this._currentTerm) {
+                            this._logInfo('VoteRequestRPC Reply has term greater than current term. Becoming Follower');
+                            this._currentTerm = resultTerm;
+                            this._prevTerm = resultTerm;
+                            clearTimeout(this._electionTimeout);
+                            this._nodeState = NodeState.FOLLOWER;
+                            return;
+                        }
+                        if (voteGranted === true) {
                             voteCount[0] += 1;
                         }
-                        if (voteCount[0] > 2) {
-                            this.nodeState = NodeState.LEADER;
-                            this.heartbeatSenderTimeout = setTimeout(() => this.sendHeartbeats(), 1000);
-                            this.logInfo('Elected as LEADER');
-
+                        if (2 * voteCount[0] > (this._peerCount + 1)) {
+                            clearTimeout(this._electionTimeout);
+                            this._initiateLeaderState();
+                            this._logInfo('Won the election');
+                            return;
                         }
                     }
-                })
+                });
             });
         } catch (err) {
-
+            this._logError('Error while conducting election: ' + err);
         }
     }
 }
