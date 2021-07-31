@@ -61,6 +61,7 @@ class RaftServer {
     private _heartbeatTimeout: any;
     private _heartbeatSenderTimeout: any;
     private _electionTimeout: any;
+    private _maxElectionRetry: number;
     private _nodeState: NodeState;
     private _emitter: events.EventEmitter;
 
@@ -87,6 +88,7 @@ class RaftServer {
         this._idToClientMap = new Map<number, RaftServiceClient>();
         this._nodeState = NodeState.FOLLOWER;
         this._electionTimeout = -1;
+        this._maxElectionRetry = 10;
         this._heartbeatTimeout = -1;
         this._currentTerm = 0;
         this._prevTerm = 0;
@@ -123,6 +125,58 @@ class RaftServer {
 
     _logError(msg: string): void {
         logger.error('Server' + this._serverId + ': ' + msg);
+    }
+
+    // Once all servers are up and running, we connect each servers to it's N-1 peers
+    initiatePeerConnections(peerIds: number[], idAddrMap: Map<number, string>) {
+        this._nodeIds = peerIds.filter(id => id != this._serverId);
+        this._nodeIds.forEach(id => {
+            this._logInfo('Connecting to Server: ' + id);
+            const value = idAddrMap.get(id);
+            const clientAddr: string = value != undefined ? value : '';
+            const client: RaftServiceClient = new loadedPackageDefinition.raft.RaftService(clientAddr, grpc.credentials.createInsecure());
+            this._idToClientMap.set(id, client);
+            this._idToAddrMap.set(id, clientAddr);
+            this._peerCount += 1;
+        });
+
+    }
+
+    disconnectPeer(peerId: number) {
+        const peerClient = this._idToClientMap.get(peerId);
+        if (peerClient !== undefined) {
+            peerClient.close();
+            return;
+        }
+        this._logError('Peer Id does not exist. Cannot close');
+    }
+
+    disconnectAllPeers() {
+        for (const peerId of this._nodeIds) {
+            const peerClient = this._idToClientMap.get(peerId);
+            if (peerClient !== undefined) {
+                peerClient.close();
+            } else {
+                this._logError('Peer Id:' + peerId + ' does not exist. Cannot close');
+            }
+
+        }
+    }
+
+    /**
+     * Close all peer connections and shutdown the machine.
+     * TODO: Maybe we can introduce a DEAD state to imitate server unavailability ?
+     */
+    shutDown() {
+        this._logInfo('Disconnecting all peer connections');
+        this.disconnectAllPeers();
+        this._server.tryShutdown((err) => {
+            if (err) {
+                this._logError('Error while trying to shutdown server: ' + err);
+                throw new Error(err.message);
+            }
+            this._logInfo('Server shutdown successfully.');
+        })
     }
 
     /**
@@ -204,46 +258,24 @@ class RaftServer {
 
     }
 
-    // Once all servers are up and running, we connect each servers to it's N-1 peers
-    initiatePeerConnections(peerIds: number[], idAddrMap: Map<number, string>) {
-        this._nodeIds = peerIds.filter(id => id != this._serverId);
-        this._nodeIds.forEach(id => {
-            this._logInfo('Connecting to Server: ' + id);
-            const value = idAddrMap.get(id);
-            const clientAddr: string = value != undefined ? value : '';
-            const client: RaftServiceClient = new loadedPackageDefinition.raft.RaftService(clientAddr, grpc.credentials.createInsecure());
-            this._idToClientMap.set(id, client);
-            this._idToAddrMap.set(id, clientAddr);
-            this._peerCount += 1;
-        });
-
-    }
-
-    disconnectAllPeers() {
-
-    }
-
-    shutDown() {
-
-    }
-
-    // TODO: Use conditional types for typechecking for optional and undefined values                                                        
     _createServiceHandlers() {
         const serviceHandlers: RaftServiceHandlers = {
             RequestForVote: (call, cb) => {
                 const request = call.request;
                 if (this._nodeState !== NodeState.FOLLOWER) {
                     this._logInfo('Received a vote request from ' + request.candidateId);
-                    //logger.info('Current votedFor: ' + this.votedFor);
+                    if (request.term && request.term < this._currentTerm) {
+                        return cb(null, { term: this._currentTerm, voteGranted: false });
+                    }
                     if (request.candidateId && (request.candidateId == this._votedFor || this._votedFor == null)) {
                         this._votedFor = request.candidateId;
-                        cb(null, { term: this._currentTerm, voteGranted: true });
+                        return cb(null, { term: this._currentTerm, voteGranted: true });
                     } else {
-                        cb(null, { term: this._currentTerm, voteGranted: false });
+                        return cb(null, { term: this._currentTerm, voteGranted: false });
                     }
 
                 } else {
-                    cb(null, { term: this._currentTerm, voteGranted: false });
+                    return cb(null, { term: this._currentTerm, voteGranted: false });
                 }
             },
 
