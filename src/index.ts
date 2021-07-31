@@ -17,8 +17,6 @@ serverId.forEach((val, idx) => {
 });
 
 
-
-
 function hasReachedConsensus(cluster: RaftServer[]) {
     const leaders = cluster.filter((server) => {
         logger.info('Server ID: ' + server.getId() + ', State: ' + server.getCurrentState());
