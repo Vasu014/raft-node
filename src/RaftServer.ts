@@ -6,6 +6,8 @@ import { logger } from './logger/Logger';
 import { RaftServiceHandlers, RaftServiceClient } from './grpc-js/proto/raft/RaftService';
 import * as events from 'events';
 
+
+
 dotenv.config();
 const PROTO_PATH = './../proto/raft.proto';
 const packageDefinition = protoLoader.loadSync(
@@ -20,6 +22,7 @@ const packageDefinition = protoLoader.loadSync(
 
 const loadedPackageDefinition = grpc.loadPackageDefinition(packageDefinition) as unknown as ProtoGrpcType;
 
+
 enum NodeState {
     FOLLOWER = 'FOLLOWER',
     CANDIDATE = 'CANDIDATE',
@@ -33,24 +36,9 @@ enum LogCommand {
 
 interface LogEntry {
     term: number;
-    command: string;
+    key: number;
 }
 
-/**
- * Functions performed:
- * 1. Reset heartbeat timeout [Done]
- * 2. Reset election timeout [Done]
- * 3. Start Election [Done]
- * 4. Request For Vote ( state == NodeState.CANDIDATE)
- * 5. Send Append Log Requests ( state == NodeState.LEADER )
- * 6. Initialize
- * 7. Service AppendRequest ( state == NodeState.FOLLOWER)
- * 8. Service HeartBeat ( state = NodeState.FOLLOWER or state == NodeState.CANDIDATE)
- * 9. Send HeartBeat ( state = NodeState.LEADER ) 
- * 10. Shutdown
- * 11. Prepare to lead (initializes all the leader related variables)
- * 
- */
 class RaftServer {
     private _serverId: number;
     private _nodeIds: number[];
@@ -69,15 +57,15 @@ class RaftServer {
     private _currentTerm: number; // latest term seen by server
     private _prevTerm: number;
     private _votedFor: number | null; // vote for the latest election
-    private _log: LogEntry[]; // commands for fsm, {command, term}, 1-indexed
+    private _log: Array<LogEntry>; // commands for fsm, {command, term}, 1-indexed
 
     // Volatile state [all servers]
     private _commitIndex: number; // highest known commit index [0,)
     private _lastApplied: number; // index of highest log applied to fsm [0,)
 
     // Volatile state [leader state only]
-    private _nextIndex: number[]; // for each server, index of next to be sent, [leader lastLogIndex+1,)
-    private _matchIndex: number[]; // for each server, index of highest entry known to be replicated [0,)
+    private _nextIndex: Map<any, any>; // for each server, index of next to be sent, [leader lastLogIndex+1,)
+    private _matchIndex: Map<any, any>; // for each server, index of highest entry known to be replicated [0,)
 
 
     constructor(serverId: number, serverAddr: string) {
@@ -94,13 +82,13 @@ class RaftServer {
         this._prevTerm = 0;
         this._votedFor = null;
         this._emitter = new events.EventEmitter();
-        this._log = []
+        this._log = new Array<LogEntry>();
 
         this._commitIndex = 0;
         this._lastApplied = 0;
 
-        this._nextIndex = [];
-        this._matchIndex = [];
+        this._nextIndex = new Map();
+        this._matchIndex = new Map();
         this._initializeServer(serverAddr);
         this._resetHeartbeatTimeout();
 
@@ -125,6 +113,14 @@ class RaftServer {
 
     _logError(msg: string): void {
         logger.error('Server' + this._serverId + ': ' + msg);
+    }
+
+    getCurrentParameters() {
+        return {
+            currentTerm: this._currentTerm,
+            latestEntry: this._log[-1],
+            currentState: this._nodeState
+        }
     }
 
     // Once all servers are up and running, we connect each servers to it's N-1 peers
@@ -287,9 +283,11 @@ class RaftServer {
              * 
              */
             AppendEntries: (call, cb) => {
+
                 const request = call.request;
+
                 const term = request.term ? request.term : -1;
-                const entries: any[] = request.entries ? request.entries.map(entry => {
+                const entries: any[] = (request.entries && request.entries !== []) ? request.entries.map(entry => {
                     return {
                         term: entry.term ? entry.term : -1,
                         command: entry.command ? entry.command : 'HEARTBEAT'
@@ -297,19 +295,60 @@ class RaftServer {
                 }) : [];
                 const prevLogIndex = request.prevLogIndex ? request.prevLogIndex : -1;
                 const prevLogTerm = request.prevLogTerm ? request.prevLogTerm : -1;
+                const leaderCommit = request.leaderId ? request.leaderCommit : -1;
+                // handle heartbeats
+                if (entries.length === 0) {
+                    if (this._nodeState === NodeState.FOLLOWER) {
+                        this._logInfo('Heartbeat received from current leader: ' + request.leaderId);
+                        this._logInfo('Resetting heartbeat timeout');
+                        this._resetHeartbeatTimeout()
+                        return cb(null, { term: this._currentTerm, success: true });
+                    }
+                    if (this._nodeState === NodeState.CANDIDATE) {
+                        this._nodeState = NodeState.FOLLOWER;
+                        this._currentTerm = term;
+                        this._prevTerm = term;
+                        this._logInfo('Heartbeat received from current leader: ' + request.leaderId);
+                        this._logInfo('Moving to FOLLOWER state. Resetting heartbeat timeout');
+                        this._resetHeartbeatTimeout();
+                        return cb(null, { term: this._currentTerm, success: true });
+                    }
+                    if (this._nodeState == NodeState.LEADER) {
 
-                if (this._nodeState === NodeState.FOLLOWER) {
-                    this._logInfo('Heartbeat received from current leader: ' + request.leaderId);
-                    this._logInfo('Resetting heartbeat timeout');
-                    this._resetHeartbeatTimeout()
-                    cb(null, { term: this._currentTerm, success: true });
-                } else if (this._nodeState === NodeState.CANDIDATE) {
-                    this._nodeState = NodeState.FOLLOWER;
-                    this._logInfo('Heartbeat received from current leader: ' + request.leaderId);
-                    this._logInfo('Moving to FOLLOWER state. Resetting heartbeat timeout');
-                    this._resetHeartbeatTimeout();
-                    cb(null, { term: this._currentTerm, success: true });
+                    }
+                } else {
+                    if (this._nodeState == NodeState.FOLLOWER) {
+                        if (this._currentTerm > term) {
+                            this._logInfo('Current Term is greater than the leader term');
+                            return cb(null, { term: this._currentTerm, success: false });
+                        }
+
+                        if (this._log.length <= prevLogIndex) {
+                            this._logInfo('Log length is less than previous log index of leader');
+                            return cb(null, { term: this._currentTerm, success: false })
+                        }
+                        const prevLogEntry = this._log[prevLogIndex];
+                        if (prevLogEntry.term !== prevLogTerm) {
+                            this._logInfo('Previous log term does not equal leader\'s previous log term');
+                            return cb(null, { term: this._currentTerm, success: false });
+                        }
+                        if (this._log.length <= prevLogIndex) {
+                            this._logInfo('Log array is too small to append new leader value');
+                            return cb(null, { term: this._currentTerm, success: false });
+                        }
+                        if (this._log.length > prevLogIndex + 1) {
+                            this._log.splice(prevLogIndex + 2);
+                        }
+                        this._logInfo('Appending entry to log');
+                        this._log.push({
+                            term: this._currentTerm,
+                            key: entries[0]
+                        });
+                        return cb(null, { term: this._currentTerm, success: true });
+
+                    }
                 }
+                return cb(new Error('Illegal State: ' + entries), { term: this._currentTerm, success: false })
 
             }
         }
