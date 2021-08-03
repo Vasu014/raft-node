@@ -1,6 +1,6 @@
 import * as joi from 'joi';
 
-const AppendRequestRPC = joi.object({
+export const AppendRequestRPC = joi.object({
     term: joi.number().required(),
     leaderId: joi.number().required(),
     prevLogIndex: joi.number().required(),

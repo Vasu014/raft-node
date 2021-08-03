@@ -4,6 +4,7 @@ import { ProtoGrpcType } from './grpc-js/proto/raft';
 import * as dotenv from 'dotenv';
 import { logger } from './logger/Logger';
 import { LogStore } from './LogStore';
+import { AppendRequestRPC } from './validators/validators';
 import { RaftServiceHandlers, RaftServiceClient } from './grpc-js/proto/raft/RaftService';
 import * as events from 'events';
 
@@ -87,25 +88,31 @@ class RaftServer {
 
     }
 
+
     getCurrentState(): NodeState {
         return this._nodeState;
     }
+
 
     getId(): number {
         return this._serverId;
     }
 
+
     getCurrentTerm(): number {
         return this._currentTerm;
     }
+
 
     _logInfo(msg: string): void {
         logger.info('Server ' + this._serverId + ': ' + msg);
     }
 
+
     _logError(msg: string): void {
         logger.error('Server' + this._serverId + ': ' + msg);
     }
+
 
     getCurrentParameters() {
         return {
@@ -114,6 +121,7 @@ class RaftServer {
             currentState: this._nodeState
         }
     }
+
 
     // Once all servers are up and running, we connect each servers to it's N-1 peers
     initiatePeerConnections(peerIds: number[], idAddrMap: Map<number, string>) {
@@ -129,6 +137,7 @@ class RaftServer {
 
     }
 
+
     disconnectPeer(peerId: number) {
         const peerClient = this._idToClientMap.get(peerId);
         if (peerClient !== undefined) {
@@ -137,6 +146,7 @@ class RaftServer {
         }
         this._logError('Peer Id does not exist. Cannot close');
     }
+
 
     disconnectAllPeers() {
         for (const peerId of this._nodeIds) {
@@ -149,6 +159,7 @@ class RaftServer {
 
         }
     }
+
 
     /**
      * Close all peer connections and shutdown the machine.
@@ -165,6 +176,7 @@ class RaftServer {
             this._logInfo('Server shutdown successfully.');
         })
     }
+
 
     /**
      * We initialize all the servers in the cluster, and assign them localhost/addresses.
@@ -183,6 +195,7 @@ class RaftServer {
         });
     }
 
+
     /**
      * Timer which waits for Leader Heartbeat, while server is in FOLLOWER state.
      * On timeout, state change to CANDIDATE and leader-election is initiated
@@ -193,6 +206,7 @@ class RaftServer {
             this._resetElectionTimeout();
         }, threshold);
     }
+
 
     /**
      * Timer which waits for Leader Heartbeat, while server is in FOLLOWER state.
@@ -210,6 +224,7 @@ class RaftServer {
             }
         }, threshold);
     }
+
 
     async _sendHeartbeats() {
         this._logInfo('Sending heartbeats to all peers');
@@ -243,6 +258,7 @@ class RaftServer {
         });
 
     }
+
 
     async _processHeartbeats(leaderId: number, term: number): Promise<boolean> {
         try {
@@ -303,33 +319,27 @@ class RaftServer {
              */
             AppendEntries: async (call, cb) => {
 
-                const request = call.request;
+                const { error, value } = AppendRequestRPC.validate(call.request);
+                const request = value;
 
-                const term = request.term ? request.term : -1;
-                const entries: any[] = (request.entries && request.entries !== []) ? request.entries.map(entry => {
-                    return {
-                        term: entry.term ? entry.term : -1,
-                        command: entry.command ? entry.command : 'HEARTBEAT'
-                    }
-                }) : [];
-                const prevLogIndex = request.prevLogIndex ? request.prevLogIndex : -1;
-                const prevLogTerm = request.prevLogTerm ? request.prevLogTerm : -1;
-                const leaderCommit = request.leaderId ? request.leaderCommit : -1;
-                // handle heartbeats
-                if (entries.length === 0) {
-                    const status = await this._processHeartbeats(request.leaderId || -1, term);
-                    return cb(null, { term: this._currentTerm, success: status });
-                } else {
-                    if (this._nodeState == NodeState.FOLLOWER) {
-                        if (this._currentTerm > term) {
-                            this._logInfo('Current Term is greater than the leader term');
-                            return cb(null, { term: this._currentTerm, success: false });
-                        }
-                        const appendStatus = await this._logStore.processEntry(prevLogIndex, prevLogTerm, entries[0]);
-                        return cb(null, { term: this._currentTerm, success: appendStatus });
-                    }
+                if (error) {
+                    return cb(new Error('Illegal request state'), { term: this._currentTerm, success: false });
                 }
-                return cb(new Error('Illegal State: ' + entries), { term: this._currentTerm, success: false })
+
+                // handle heartbeats
+                if (request.entries.length === 0) {
+                    const status = await this._processHeartbeats(request.leaderId || -1, request.term);
+                    return cb(null, { term: this._currentTerm, success: status });
+                }
+                // Otherwise it is an AppendLog request, handle all the cases for it.
+                if (this._nodeState == NodeState.FOLLOWER) {
+                    if (this._currentTerm > request.term) {
+                        this._logInfo('Current Term is greater than the leader term');
+                        return cb(null, { term: this._currentTerm, success: false });
+                    }
+                    const appendStatus = await this._logStore.processEntry(request.prevLogIndex, request.prevLogTerm, request.entries[0]);
+                    return cb(null, { term: this._currentTerm, success: appendStatus });
+                }
 
             }
         }
@@ -348,6 +358,7 @@ class RaftServer {
 
         this._logInfo('Moved to  state: LEADER');
     }
+
 
     // Leader election logic. Election is conducted when server moves to CANDIDATE state. 
     async _conductLeaderElection(): Promise<void> {
