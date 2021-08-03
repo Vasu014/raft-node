@@ -4,10 +4,8 @@ import { ProtoGrpcType } from './grpc-js/proto/raft';
 import * as dotenv from 'dotenv';
 import { logger } from './logger/Logger';
 import { LogStore } from './LogStore';
-import { AppendRequestRPC } from './validators/validators';
+import { AppendRequestRPC, IAppendRequestRPC, RequestVoteRPC, IRequestVoteRPC } from './validators/validators';
 import { RaftServiceHandlers, RaftServiceClient } from './grpc-js/proto/raft/RaftService';
-import * as events from 'events';
-
 
 
 dotenv.config();
@@ -292,7 +290,13 @@ class RaftServer {
     _createServiceHandlers() {
         const serviceHandlers: RaftServiceHandlers = {
             RequestForVote: (call, cb) => {
-                const request = call.request;
+
+                const { error, value } = RequestVoteRPC.validate(call.request);
+                if (error) {
+                    return cb(new Error('Illegal request state'), { term: this._currentTerm, voteGranted: false });
+                }
+
+                const request: IRequestVoteRPC = value;
                 if (this._nodeState !== NodeState.FOLLOWER) {
                     this._logInfo('Received a vote request from ' + request.candidateId);
                     if (request.term && request.term < this._currentTerm) {
@@ -311,21 +315,14 @@ class RaftServer {
             },
 
 
-            /**
-             * Cases (For heartbeats):
-             * 1. receiver is in state === NodeState.FOLLOWER
-             * 2. receiver is in state === NodeState.CANDIDATE
-             * 
-             */
             AppendEntries: async (call, cb) => {
 
                 const { error, value } = AppendRequestRPC.validate(call.request);
-                const request = value;
-
                 if (error) {
                     return cb(new Error('Illegal request state'), { term: this._currentTerm, success: false });
                 }
 
+                const request: IAppendRequestRPC = value;
                 // handle heartbeats
                 if (request.entries.length === 0) {
                     const status = await this._processHeartbeats(request.leaderId || -1, request.term);
