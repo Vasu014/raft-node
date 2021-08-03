@@ -3,6 +3,7 @@ import * as protoLoader from '@grpc/proto-loader'
 import { ProtoGrpcType } from './grpc-js/proto/raft';
 import * as dotenv from 'dotenv';
 import { logger } from './logger/Logger';
+import { LogStore } from './LogStore';
 import { RaftServiceHandlers, RaftServiceClient } from './grpc-js/proto/raft/RaftService';
 import * as events from 'events';
 
@@ -43,7 +44,6 @@ class RaftServer {
     private _serverId: number;
     private _nodeIds: number[];
     private _peerCount: number;
-    private _idToAddrMap: Map<number, string>;
     private _idToClientMap: Map<number, RaftServiceClient>;
     private _server: grpc.Server = new grpc.Server();
     private _heartbeatTimeout: any;
@@ -51,17 +51,12 @@ class RaftServer {
     private _electionTimeout: any;
     private _maxElectionRetry: number;
     private _nodeState: NodeState;
-    private _emitter: events.EventEmitter;
 
     // Persistent state (Should be updated on stable storage before replying to RPC)
     private _currentTerm: number; // latest term seen by server
     private _prevTerm: number;
     private _votedFor: number | null; // vote for the latest election
-    private _log: Array<LogEntry>; // commands for fsm, {command, term}, 1-indexed
-
-    // Volatile state [all servers]
-    private _commitIndex: number; // highest known commit index [0,)
-    private _lastApplied: number; // index of highest log applied to fsm [0,)
+    private _logStore: LogStore; // commands for fsm, {command, term}, 1-indexed
 
     // Volatile state [leader state only]
     private _nextIndex: Map<any, any>; // for each server, index of next to be sent, [leader lastLogIndex+1,)
@@ -72,7 +67,7 @@ class RaftServer {
         this._serverId = serverId;
         this._nodeIds = [];
         this._peerCount = 0;
-        this._idToAddrMap = new Map<number, string>();
+
         this._idToClientMap = new Map<number, RaftServiceClient>();
         this._nodeState = NodeState.FOLLOWER;
         this._electionTimeout = -1;
@@ -81,11 +76,8 @@ class RaftServer {
         this._currentTerm = 0;
         this._prevTerm = 0;
         this._votedFor = null;
-        this._emitter = new events.EventEmitter();
-        this._log = new Array<LogEntry>();
 
-        this._commitIndex = 0;
-        this._lastApplied = 0;
+        this._logStore = new LogStore(this._serverId);
 
         this._nextIndex = new Map();
         this._matchIndex = new Map();
@@ -118,7 +110,7 @@ class RaftServer {
     getCurrentParameters() {
         return {
             currentTerm: this._currentTerm,
-            latestEntry: this._log[-1],
+            latestEntry: this._logStore.getLatestEntry(),
             currentState: this._nodeState
         }
     }
@@ -132,7 +124,6 @@ class RaftServer {
             const clientAddr: string = value != undefined ? value : '';
             const client: RaftServiceClient = new loadedPackageDefinition.raft.RaftService(clientAddr, grpc.credentials.createInsecure());
             this._idToClientMap.set(id, client);
-            this._idToAddrMap.set(id, clientAddr);
             this._peerCount += 1;
         });
 
@@ -209,9 +200,8 @@ class RaftServer {
      */
     _resetHeartbeatTimeout() {
         const threshold = process.env.HEARTBEAT_TIMEOUT ? parseInt(process.env.HEARTBEAT_TIMEOUT) : 2000;
-        if (this._heartbeatTimeout !== -1) {
-            clearTimeout(this._heartbeatTimeout);
-        }
+
+        clearTimeout(this._heartbeatTimeout);
         this._heartbeatTimeout = setTimeout(() => {
             this._logInfo('Heartbeat timed out. Moving to Candidate and starting election');
             if (this._nodeState === NodeState.FOLLOWER) {
@@ -235,7 +225,7 @@ class RaftServer {
                 {
                     term: this._currentTerm,
                     leaderId: this._serverId,
-                    prevLogIndex: this._lastApplied,
+                    prevLogIndex: this._logStore.getLastApplied(),
                     prevLogTerm: this._currentTerm - 1,
                     entries: []
                 },
@@ -253,6 +243,35 @@ class RaftServer {
         });
 
     }
+
+    async _processHeartbeats(leaderId: number, term: number): Promise<boolean> {
+        try {
+            if (this._nodeState === NodeState.FOLLOWER) {
+                this._logInfo('Heartbeat received from current leader: ' + leaderId);
+                this._logInfo('Resetting heartbeat timeout');
+                this._resetHeartbeatTimeout();
+                return true;
+
+            }
+            if (this._nodeState === NodeState.CANDIDATE) {
+                this._nodeState = NodeState.FOLLOWER;
+                this._currentTerm = term;
+                this._prevTerm = term;
+                this._logInfo('Heartbeat received from current leader: ' + leaderId);
+                this._logInfo('Moving to FOLLOWER state. Resetting heartbeat timeout');
+                this._resetHeartbeatTimeout();
+                return true;
+
+            }
+            // TODO: Handle NodeState.Leader 
+            return false;
+
+        } catch (err) {
+            this._logError('Error while processing heartbeat: ' + err);
+            return false;
+        }
+    }
+
 
     _createServiceHandlers() {
         const serviceHandlers: RaftServiceHandlers = {
@@ -282,7 +301,7 @@ class RaftServer {
              * 2. receiver is in state === NodeState.CANDIDATE
              * 
              */
-            AppendEntries: (call, cb) => {
+            AppendEntries: async (call, cb) => {
 
                 const request = call.request;
 
@@ -298,54 +317,16 @@ class RaftServer {
                 const leaderCommit = request.leaderId ? request.leaderCommit : -1;
                 // handle heartbeats
                 if (entries.length === 0) {
-                    if (this._nodeState === NodeState.FOLLOWER) {
-                        this._logInfo('Heartbeat received from current leader: ' + request.leaderId);
-                        this._logInfo('Resetting heartbeat timeout');
-                        this._resetHeartbeatTimeout()
-                        return cb(null, { term: this._currentTerm, success: true });
-                    }
-                    if (this._nodeState === NodeState.CANDIDATE) {
-                        this._nodeState = NodeState.FOLLOWER;
-                        this._currentTerm = term;
-                        this._prevTerm = term;
-                        this._logInfo('Heartbeat received from current leader: ' + request.leaderId);
-                        this._logInfo('Moving to FOLLOWER state. Resetting heartbeat timeout');
-                        this._resetHeartbeatTimeout();
-                        return cb(null, { term: this._currentTerm, success: true });
-                    }
-                    if (this._nodeState == NodeState.LEADER) {
-
-                    }
+                    const status = await this._processHeartbeats(request.leaderId || -1, term);
+                    return cb(null, { term: this._currentTerm, success: status });
                 } else {
                     if (this._nodeState == NodeState.FOLLOWER) {
                         if (this._currentTerm > term) {
                             this._logInfo('Current Term is greater than the leader term');
                             return cb(null, { term: this._currentTerm, success: false });
                         }
-
-                        if (this._log.length <= prevLogIndex) {
-                            this._logInfo('Log length is less than previous log index of leader');
-                            return cb(null, { term: this._currentTerm, success: false })
-                        }
-                        const prevLogEntry = this._log[prevLogIndex];
-                        if (prevLogEntry.term !== prevLogTerm) {
-                            this._logInfo('Previous log term does not equal leader\'s previous log term');
-                            return cb(null, { term: this._currentTerm, success: false });
-                        }
-                        if (this._log.length <= prevLogIndex) {
-                            this._logInfo('Log array is too small to append new leader value');
-                            return cb(null, { term: this._currentTerm, success: false });
-                        }
-                        if (this._log.length > prevLogIndex + 1) {
-                            this._log.splice(prevLogIndex + 2);
-                        }
-                        this._logInfo('Appending entry to log');
-                        this._log.push({
-                            term: this._currentTerm,
-                            key: entries[0]
-                        });
-                        return cb(null, { term: this._currentTerm, success: true });
-
+                        const appendStatus = await this._logStore.processEntry(prevLogIndex, prevLogTerm, entries[0]);
+                        return cb(null, { term: this._currentTerm, success: appendStatus });
                     }
                 }
                 return cb(new Error('Illegal State: ' + entries), { term: this._currentTerm, success: false })
@@ -356,9 +337,6 @@ class RaftServer {
         return serviceHandlers;
     }
 
-    async _appendLogHandler() {
-
-    }
 
     _initiateLeaderState() {
         this._nodeState = NodeState.LEADER;
@@ -387,7 +365,7 @@ class RaftServer {
                 client?.RequestForVote({
                     term: this._currentTerm,
                     candidateId: this._serverId,
-                    lastLogIndex: this._commitIndex,
+                    lastLogIndex: this._logStore.getCommitIndex(),
                     lastLogTerm: 0
                 }, (err, result) => {
                     if (err) {
