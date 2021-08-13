@@ -1,27 +1,7 @@
-import * as grpc from '@grpc/grpc-js'
-import * as protoLoader from '@grpc/proto-loader'
-import { ProtoGrpcType } from './grpc-js/proto/raft';
-import * as dotenv from 'dotenv';
 import { logger } from './logger/Logger';
 import { LogStore } from './LogStore';
-import { AppendRequestRPC, IAppendRequestRPC, RequestVoteRPC, IRequestVoteRPC } from './validators/validators';
-import { RaftServiceHandlers, RaftServiceClient } from './grpc-js/proto/raft/RaftService';
-
-
-dotenv.config();
-const PROTO_PATH = './../proto/raft.proto';
-const packageDefinition = protoLoader.loadSync(
-    __dirname + PROTO_PATH,
-    {
-        keepCase: true,
-        longs: String,
-        enums: String,
-        defaults: true,
-        oneofs: true
-    });
-
-const loadedPackageDefinition = grpc.loadPackageDefinition(packageDefinition) as unknown as ProtoGrpcType;
-
+import { IAppendRequest, IAppendResponse, IVoteRequest, IVoteResponse } from './validators/validators';
+import { GRPCClientAdapter } from './GRPCClientAdapter';
 
 enum NodeState {
     FOLLOWER = 'FOLLOWER',
@@ -29,59 +9,49 @@ enum NodeState {
     LEADER = 'LEADER'
 }
 
-enum LogCommand {
-    HEARTBEAT = 'HEARTBEAT',
-    APPEND = 'APPEND'
-}
 
 interface LogEntry {
     term: number;
     key: number;
 }
 
-class RaftServer {
+class ConsensusModule {
     private _serverId: number;
-    private _nodeIds: number[];
-    private _peerCount: number;
-    private _idToClientMap: Map<number, RaftServiceClient>;
-    private _server: grpc.Server = new grpc.Server();
     private _heartbeatTimeout: any;
     private _heartbeatSenderTimeout: any;
     private _electionTimeout: any;
     private _maxElectionRetry: number;
     private _nodeState: NodeState;
+    currentTerm: number;
+
 
     // Persistent state (Should be updated on stable storage before replying to RPC)
     private _currentTerm: number; // latest term seen by server
     private _prevTerm: number;
     private _votedFor: number | null; // vote for the latest election
     private _logStore: LogStore; // commands for fsm, {command, term}, 1-indexed
-
+    private _peerClients: GRPCClientAdapter[];
     // Volatile state [leader state only]
     private _nextIndex: Map<any, any>; // for each server, index of next to be sent, [leader lastLogIndex+1,)
     private _matchIndex: Map<any, any>; // for each server, index of highest entry known to be replicated [0,)
 
 
-    constructor(serverId: number, serverAddr: string) {
-        this._serverId = serverId;
-        this._nodeIds = [];
-        this._peerCount = 0;
-
-        this._idToClientMap = new Map<number, RaftServiceClient>();
+    constructor(id: number) {
+        this._serverId = id;
         this._nodeState = NodeState.FOLLOWER;
+
         this._electionTimeout = -1;
         this._maxElectionRetry = 10;
         this._heartbeatTimeout = -1;
         this._currentTerm = 0;
         this._prevTerm = 0;
         this._votedFor = null;
-
         this._logStore = new LogStore(this._serverId);
-
         this._nextIndex = new Map();
         this._matchIndex = new Map();
-        this._initializeServer(serverAddr);
         this._resetHeartbeatTimeout();
+        this.currentTerm = 0;
+        this._peerClients = [];
 
 
     }
@@ -121,79 +91,6 @@ class RaftServer {
     }
 
 
-    // Once all servers are up and running, we connect each servers to it's N-1 peers
-    initiatePeerConnections(peerIds: number[], idAddrMap: Map<number, string>) {
-        this._nodeIds = peerIds.filter(id => id != this._serverId);
-        this._nodeIds.forEach(id => {
-            this._logInfo('Connecting to Server: ' + id);
-            const value = idAddrMap.get(id);
-            const clientAddr: string = value != undefined ? value : '';
-            const client: RaftServiceClient = new loadedPackageDefinition.raft.RaftService(clientAddr, grpc.credentials.createInsecure());
-            this._idToClientMap.set(id, client);
-            this._peerCount += 1;
-        });
-
-    }
-
-
-    disconnectPeer(peerId: number) {
-        const peerClient = this._idToClientMap.get(peerId);
-        if (peerClient !== undefined) {
-            peerClient.close();
-            return;
-        }
-        this._logError('Peer Id does not exist. Cannot close');
-    }
-
-
-    disconnectAllPeers() {
-        for (const peerId of this._nodeIds) {
-            const peerClient = this._idToClientMap.get(peerId);
-            if (peerClient !== undefined) {
-                peerClient.close();
-            } else {
-                this._logError('Peer Id:' + peerId + ' does not exist. Cannot close');
-            }
-
-        }
-    }
-
-
-    /**
-     * Close all peer connections and shutdown the machine.
-     * TODO: Maybe we can introduce a DEAD state to imitate server unavailability ?
-     */
-    shutDown() {
-        this._logInfo('Disconnecting all peer connections');
-        this.disconnectAllPeers();
-        this._server.tryShutdown((err) => {
-            if (err) {
-                this._logError('Error while trying to shutdown server: ' + err);
-                throw new Error(err.message);
-            }
-            this._logInfo('Server shutdown successfully.');
-        })
-    }
-
-
-    /**
-     * We initialize all the servers in the cluster, and assign them localhost/addresses.
-     */
-    _initializeServer(addr: string): void {
-        const server = new grpc.Server();
-        const serviceHandler = this._createServiceHandlers();
-        server.addService(loadedPackageDefinition.raft.RaftService.service, {
-            RequestForVote: serviceHandler.RequestForVote,
-            AppendEntries: serviceHandler.AppendEntries
-        });
-
-        server.bindAsync(addr, grpc.ServerCredentials.createInsecure(), (err, port) => {
-            server.start();
-            this._server = server;
-        });
-    }
-
-
     /**
      * Timer which waits for Leader Heartbeat, while server is in FOLLOWER state.
      * On timeout, state change to CANDIDATE and leader-election is initiated
@@ -223,8 +120,8 @@ class RaftServer {
         }, threshold);
     }
 
-
-    async _sendHeartbeats() {
+    // TODO: Move to RaftNode
+    /* async _sendHeartbeats() {
         this._logInfo('Sending heartbeats to all peers');
         let counter = 0
         this._nodeIds.forEach(id => {
@@ -255,9 +152,9 @@ class RaftServer {
             )
         });
 
-    }
+    } */
 
-
+    // Todo: Edit for consensus module
     async _processHeartbeats(leaderId: number, term: number): Promise<boolean> {
         try {
             if (this._nodeState === NodeState.FOLLOWER) {
@@ -287,68 +184,68 @@ class RaftServer {
     }
 
 
-    _createServiceHandlers() {
-        const serviceHandlers: RaftServiceHandlers = {
-            RequestForVote: (call, cb) => {
+    // Todo: refactor for consensus module
+    _voteRequestHandler(request: IVoteRequest): IVoteResponse {
 
-                const { error, value } = RequestVoteRPC.validate(call.request);
-                if (error) {
-                    return cb(new Error('Illegal request state'), { term: this._currentTerm, voteGranted: false });
-                }
-
-                const request: IRequestVoteRPC = value;
-                if (this._nodeState !== NodeState.FOLLOWER) {
-                    this._logInfo('Received a vote request from ' + request.candidateId);
-                    if (request.term && request.term < this._currentTerm) {
-                        return cb(null, { term: this._currentTerm, voteGranted: false });
-                    }
-                    if (request.candidateId && (request.candidateId == this._votedFor || this._votedFor == null)) {
-                        this._votedFor = request.candidateId;
-                        return cb(null, { term: this._currentTerm, voteGranted: true });
-                    } else {
-                        return cb(null, { term: this._currentTerm, voteGranted: false });
-                    }
-
-                } else {
-                    return cb(null, { term: this._currentTerm, voteGranted: false });
-                }
-            },
-
-
-            AppendEntries: async (call, cb) => {
-
-                const { error, value } = AppendRequestRPC.validate(call.request);
-                if (error) {
-                    return cb(new Error('Illegal request state'), { term: this._currentTerm, success: false });
-                }
-
-                const request: IAppendRequestRPC = value;
-                // handle heartbeats
-                if (request.entries.length === 0) {
-                    const status = await this._processHeartbeats(request.leaderId || -1, request.term);
-                    return cb(null, { term: this._currentTerm, success: status });
-                }
-                // Otherwise it is an AppendLog request, handle all the cases for it.
-                if (this._nodeState == NodeState.FOLLOWER) {
-                    if (this._currentTerm > request.term) {
-                        this._logInfo('Current Term is greater than the leader term');
-                        return cb(null, { term: this._currentTerm, success: false });
-                    }
-                    const appendStatus = await this._logStore.processEntry(request.prevLogIndex, request.prevLogTerm, request.entries[0]);
-                    return cb(null, { term: this._currentTerm, success: appendStatus });
-                }
-
-            }
+        const response: IVoteResponse = {
+            status: false,
+            currentTerm: this.currentTerm
         }
+        if (this._nodeState !== NodeState.FOLLOWER) {
+            this._logInfo('Received a vote request from ' + request.candidateId);
 
-        return serviceHandlers;
+            if (request.term && request.term < this._currentTerm) {
+                return response;
+            }
+            if (request.candidateId && (request.candidateId == this._votedFor || this._votedFor == null)) {
+                this._votedFor = request.candidateId;
+                response.status = true;
+                return response;
+
+            } else {
+                return response
+            }
+
+        } else {
+            return response;
+        }
     }
 
 
+    // Todo: refactor for consensus module
+    async _appendEntriesHandler(request: IAppendRequest): IAppendResponse {
+
+
+        // handle heartbeats
+        if (request.entries.length === 0) {
+            const status = await this._processHeartbeats(request.leaderId || -1, request.term);
+            return cb(null, { term: this._currentTerm, success: status });
+        }
+        // Otherwise it is an AppendLog request, handle all the cases for it.
+        if (this._nodeState == NodeState.FOLLOWER) {
+            if (this._currentTerm > request.term) {
+                this._logInfo('Current Term is greater than the leader term');
+                return cb(null, { term: this._currentTerm, success: false });
+            }
+            const appendStatus = await this._logStore.processEntry(request.prevLogIndex, request.prevLogTerm, request.entries[0]);
+            return cb(null, { term: this._currentTerm, success: appendStatus });
+        }
+
+    }
+
+    // Todo: Re
     _initiateLeaderState() {
         this._nodeState = NodeState.LEADER;
-        //TODO: initialize commitIndexes, nextIndexes for each peer server as well
+
         this._prevTerm = this._currentTerm;
+        this._nextIndex = new Map<number, number>();
+        this._matchIndex = new Map<number, number>();
+        const lastIndex = this._logStore.getLastApplied();
+        this._nodeIds.forEach(nodeId => {
+            this._nextIndex.set(nodeId, lastIndex + 1)
+            this._matchIndex.set(nodeId, 0);
+        });
+
         if (this._heartbeatSenderTimeout == null) {
             this._heartbeatSenderTimeout = setTimeout(() => this._sendHeartbeats(), 1000);
         }
@@ -412,4 +309,4 @@ class RaftServer {
     }
 }
 
-export { RaftServer, NodeState };
+export { ConsensusModule, NodeState };

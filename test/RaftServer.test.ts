@@ -1,4 +1,4 @@
-import { RaftServer, NodeState } from './../src/RaftServer';
+import { ConsensusModule, NodeState } from '../src/ConsensusModule';
 import * as dotEnv from 'dotenv';
 
 
@@ -9,7 +9,7 @@ afterEach(() => {
 
 describe('Running RaftServer Node sanity checks', () => {
 
-    const server = new RaftServer(1, 'http://localhost:3550');
+    const server = new ConsensusModule(1, 'http://localhost:3550');
     it('should have initial state as FOLLOWER', () => {
         expect(server.getCurrentState()).toBe(NodeState.FOLLOWER);
     });

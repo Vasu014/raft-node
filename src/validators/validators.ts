@@ -21,7 +21,17 @@ export const RequestVoteRPC = joi.object({
     lastLogTerm: joi.number().required(),
 });
 
-export interface IAppendRequestRPC {
+export const ResponseVoteRPC = joi.object({
+    term: joi.number().required(),
+    voteGranted: joi.bool().required()
+});
+
+
+export const ResponseAppendRPC = joi.object({
+
+});
+
+export interface IAppendRequest {
     term: number;
     leaderId: number;
     prevLogIndex: number;
@@ -33,9 +43,16 @@ export interface IAppendRequestRPC {
     }[];
 };
 
-export interface IRequestVoteRPC {
+export interface IVoteRequest {
     term: number;
     candidateId: number;
     lastLogIndex: number;
     lastLogTerm: number;
 };
+
+export interface IVoteResponse {
+    status: boolean;
+    currentTerm: number;
+};
+
+export interface IAppendResponse { };
