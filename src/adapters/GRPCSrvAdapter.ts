@@ -2,7 +2,7 @@ import * as grpc from "@grpc/grpc-js";
 import { logger } from './../logger/Logger';
 import { ConsensusModule } from "./../ConsensusModule";
 import { AppendRequestRPC, IAppendRequest, IAppendResponse, RequestVoteRPC, IVoteRequest, IVoteResponse } from './../validators/validators';
-import { loadedPackageDefinition } from '../package/definition';
+import { loadedPackageDefinition } from './../package/definition';
 
 
 class GRPCSrvAdapter {

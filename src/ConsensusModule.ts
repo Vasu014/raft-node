@@ -9,7 +9,6 @@ enum NodeState {
     LEADER = 'LEADER'
 }
 
-
 interface LogEntry {
     term: number;
     key: number;
@@ -88,7 +87,6 @@ class ConsensusModule {
     _logError(msg: string): void {
         logger.error('Server' + this._serverId + ': ' + msg);
     }
-
 
     getCurrentParameters() {
         return {
