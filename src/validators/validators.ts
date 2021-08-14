@@ -51,8 +51,11 @@ export interface IVoteRequest {
 };
 
 export interface IVoteResponse {
-    status: boolean;
-    currentTerm: number;
+    term: number;
+    voteGranted: boolean;
 };
 
-export interface IAppendResponse { };
+export interface IAppendResponse {
+    term: number;
+    success: boolean;
+};

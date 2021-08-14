@@ -1,8 +1,9 @@
 import * as grpc from "@grpc/grpc-js";
-import { logger } from './logger/Logger';
-import { ConsensusModule } from "./ConsensusModule";
-import { AppendRequestRPC, IAppendRequest, IAppendResponse, RequestVoteRPC, IVoteRequest, IVoteResponse } from './validators/validators';
-import { loadedPackageDefinition } from './package/definition';
+import { logger } from './../logger/Logger';
+import { ConsensusModule } from "./../ConsensusModule";
+import { AppendRequestRPC, IAppendRequest, IAppendResponse, RequestVoteRPC, IVoteRequest, IVoteResponse } from './../validators/validators';
+import { loadedPackageDefinition } from '../package/definition';
+
 
 class GRPCSrvAdapter {
     private _server: grpc.Server;
@@ -49,7 +50,7 @@ class GRPCSrvAdapter {
                 const request: IVoteRequest = value;
                 try {
                     const response: IVoteResponse = await this._cm._voteRequestHandler(request);
-                    return cb(null, { term: this._cm.currentTerm, voteGranted: response.status });
+                    return cb(null, { term: this._cm.currentTerm, voteGranted: response.voteGranted });
                 } catch (err) {
                     return cb(new Error, { term: this._cm.currentTerm, voteGranted: false });
                 }
@@ -80,4 +81,3 @@ class GRPCSrvAdapter {
 }
 
 export { GRPCSrvAdapter };
- 

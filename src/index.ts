@@ -19,8 +19,6 @@ for (const node of configJSON) {
     logger.info('Node Config:' + JSON.stringify(node));
 }
 
-
-
 const serverId = [1, 2, 3, 4];
 const ips = [5001, 5002, 5003, 5004].map(ip => {
     return 'localhost:' + ip.toString()
@@ -48,11 +46,11 @@ function hasReachedConsensus(cluster: ConsensusModule[]) {
     }
 }
 
-const cluster: ConsensusModule[] = serverId.map((id, index) => {
+/* const cluster: ConsensusModule[] = serverId.map((id, index) => {
     return new ConsensusModule(id, ips[index]);
 })
 
 logger.info('Welcome to RAFT Cluster Module. starting servers, and connecting to peers');
 cluster.forEach(server => server.initiatePeerConnections(serverId, idAddrMap));
 setTimeout(() => hasReachedConsensus(cluster), 100);
-
+ */
