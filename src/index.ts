@@ -1,7 +1,10 @@
-import { ConsensusModule, NodeState } from './ConsensusModule';
+//import { ConsensusModule, NodeState } from './ConsensusModule';
 import { logger } from './logger/Logger';
 import * as fs from 'fs';
 import * as dotenv from 'dotenv';
+import { Peer } from './Peer';
+import { RaftNode } from './RaftNode';
+import { raftFactory } from './RaftFactory';
 
 dotenv.config();
 
@@ -15,21 +18,20 @@ const config = fs.readFileSync(__dirname + '/config/node_config.json');
 const configJSON = JSON.parse(config.toString());
 logger.info(JSON.stringify(configJSON));
 
-for (const node of configJSON) {
-    logger.info('Node Config:' + JSON.stringify(node));
+const peers: Peer[] = configJSON.nodelist.map((node: any) => {
+    return new Peer(node.id, node.ip);
+})
+
+const raftNodes: RaftNode[] = [];
+for (let i = 1; i <= peers.length; i++) {
+    const newNode = raftFactory.buildRaftNode(peers, i);
+    raftNodes.push(newNode);
 }
 
-const serverId = [1, 2, 3, 4];
-const ips = [5001, 5002, 5003, 5004].map(ip => {
-    return 'localhost:' + ip.toString()
-});
-const idAddrMap = new Map<number, string>();
-serverId.forEach((val, idx) => {
-    idAddrMap.set(val, ips[idx]);
-});
+logger.info(raftNodes);
+//const
 
-
-function hasReachedConsensus(cluster: ConsensusModule[]) {
+/* function hasReachedConsensus(cluster: ConsensusModule[]) {
     const leaders = cluster.filter((server) => {
         logger.info('Server ID: ' + server.getId() + ', State: ' + server.getCurrentState());
         if (server.getCurrentState() === NodeState.LEADER) {
@@ -44,7 +46,7 @@ function hasReachedConsensus(cluster: ConsensusModule[]) {
         logger.info('No consensus yet. Waiting...');
         setTimeout(() => hasReachedConsensus(cluster), 1000);
     }
-}
+} */
 
 /* const cluster: ConsensusModule[] = serverId.map((id, index) => {
     return new ConsensusModule(id, ips[index]);

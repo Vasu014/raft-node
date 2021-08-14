@@ -1,9 +1,9 @@
 
 import * as grpc from "@grpc/grpc-js";
-import { logger } from '../logger/Logger';
-import { loadedPackageDefinition } from '../package/definition';
-import { AppendRequestRPC, IAppendRequest, IAppendResponse, RequestVoteRPC, ResponseVoteRPC, IVoteRequest, IVoteResponse } from '../validators/validators';
-import { RaftServiceClient } from "../grpc-js/proto/raft/RaftService";
+import { logger } from './../logger/Logger';
+import { loadedPackageDefinition } from './../package/definition';
+import { AppendRequestRPC, IAppendRequest, IAppendResponse, RequestVoteRPC, ResponseVoteRPC, IVoteRequest, IVoteResponse } from './../validators/validators';
+import { RaftServiceClient } from "./../grpc-js/proto/raft/RaftService";
 
 
 class GRPCClientAdapter {

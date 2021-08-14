@@ -6,60 +6,61 @@ import { loadedPackageDefinition } from './../package/definition';
 
 
 class GRPCSrvAdapter {
-    private _server: grpc.Server;
-    private _serverId: number;
-    private _cm: ConsensusModule;
+    private server: grpc.Server;
+    private serverId: number;
+    private cm: ConsensusModule;
+
     constructor(cm: ConsensusModule, id: number) {
-        this._serverId = id;
-        this._server = new grpc.Server();
-        this._cm = cm;
+        this.serverId = id;
+        this.server = new grpc.Server();
+        this.cm = cm;
     }
 
 
-    _logInfo(msg: string): void {
-        logger.info('Server ' + this._serverId + ': ' + msg);
+    logInfo(msg: string): void {
+        logger.info('Server ' + this.serverId + ': ' + msg);
     }
 
 
-    _logError(msg: string): void {
-        logger.error('Server' + this._serverId + ': ' + msg);
+    logError(msg: string): void {
+        logger.error('Server' + this.serverId + ': ' + msg);
     }
 
 
     /**
      * We initialize all the servers in the cluster, and assign them localhost/addresses.
      */
-    _initializeServer(addr: string): void {
+    initializeServer(addr: string): void {
         const server = new grpc.Server();
-        this._setupHandlers();
+        this.setupHandlers();
         server.bindAsync(addr, grpc.ServerCredentials.createInsecure(), (err, port) => {
             server.start();
-            this._server = server;
+            this.server = server;
         });
     }
 
 
-    _setupHandlers() {
-        this._server.addService(loadedPackageDefinition.raft.RaftService.service, {
+    setupHandlers() {
+        this.server.addService(loadedPackageDefinition.raft.RaftService.service, {
             RequestVote: async (call: any, cb: any) => {
                 const { error, value } = RequestVoteRPC.validate(call.request);
                 if (error) {
-                    return cb(new Error('Illegal request state'), { term: this._cm.currentTerm, voteGranted: false });
+                    return cb(new Error('Illegal request state'), { term: this.cm.currentTerm, voteGranted: false });
                 }
 
                 const request: IVoteRequest = value;
                 try {
-                    const response: IVoteResponse = await this._cm._voteRequestHandler(request);
-                    return cb(null, { term: this._cm.currentTerm, voteGranted: response.voteGranted });
+                    const response: IVoteResponse = await this.cm.voteRequestHandler(request);
+                    return cb(null, { term: this.cm.currentTerm, voteGranted: response.voteGranted });
                 } catch (err) {
-                    return cb(new Error, { term: this._cm.currentTerm, voteGranted: false });
+                    return cb(new Error, { term: this.cm.currentTerm, voteGranted: false });
                 }
             },
             // TODO: Implement Append Entries handler in ConsensusModule and Here
             AppendEntries: async (call: any, cb: any) => {
                 const { error, value } = AppendRequestRPC.validate(call.request);
                 if (error) {
-                    return cb(new Error('Illegal request state'), { term: this._cm.currentTerm, success: false });
+                    return cb(new Error('Illegal request state'), { term: this.cm.currentTerm, success: false });
                 }
 
                 const request: IAppendRequest = value;
@@ -68,14 +69,14 @@ class GRPCSrvAdapter {
     }
 
     shutDown() {
-        this._logInfo('Disconnecting all peer connections');
+        this.logInfo('Disconnecting all peer connections');
         //this.disconnectAllPeers();
-        this._server.tryShutdown((err) => {
+        this.server.tryShutdown((err) => {
             if (err) {
-                this._logError('Error while trying to shutdown server: ' + err);
+                this.logError('Error while trying to shutdown server: ' + err);
                 throw new Error(err.message);
             }
-            this._logInfo('Server shutdown successfully.');
+            this.logInfo('Server shutdown successfully.');
         })
     }
 }
