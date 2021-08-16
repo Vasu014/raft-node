@@ -1,5 +1,6 @@
 import { logger } from './logger/Logger';
 import { LogStore } from './LogStore';
+import { Peer } from './Peer';
 import { IAppendRequest, IAppendResponse, IVoteRequest, IVoteResponse } from './validators/validators';
 import { GRPCClientAdapter } from './adapters/GRPCClientAdapter';
 
@@ -9,19 +10,7 @@ enum NodeState {
     LEADER = 'LEADER'
 }
 
-interface LogEntry {
-    term: number;
-    key: number;
-}
 
-class Peer {
-    id: number;
-    addr: string;
-    constructor(id: number, addr: string) {
-        this.id = id;
-        this.addr = addr;
-    }
-}
 
 class ConsensusModule {
     private serverId: number;
