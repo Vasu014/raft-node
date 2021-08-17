@@ -5,6 +5,7 @@ import * as dotenv from 'dotenv';
 import { Peer } from './Peer';
 import { RaftNode } from './RaftNode';
 import { raftFactory } from './RaftFactory';
+import { NodeState } from './ConsensusModule';
 
 dotenv.config();
 
@@ -24,7 +25,12 @@ const peers: Peer[] = configJSON.nodelist.map((node: any) => {
 
 const raftNodes: RaftNode[] = [];
 for (let i = 1; i <= peers.length; i++) {
-    const newNode = raftFactory.buildRaftNode(peers, i);
+    const config = {
+        initialState: NodeState.FOLLOWER,
+        heartbeatTimeout: Number(process.env.HEARTBEATTIMEOUT) | 1000,
+        electionTimeout: Number(process.env.ELECTION_TIMEOUT) | 500
+    };
+    const newNode = raftFactory.buildRaftNode(peers, i, config);
     raftNodes.push(newNode);
 }
 

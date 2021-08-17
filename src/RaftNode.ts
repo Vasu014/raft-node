@@ -4,22 +4,39 @@ import { GRPCSrvAdapter } from './adapters/GRPCSrvAdapter';
 
 
 class RaftNode {
-    private _nodeId: number;
-    private _cm: ConsensusModule;
-    private _grpcAdapter: GRPCSrvAdapter;
+    private nodeId: number;
+    private cm: ConsensusModule;
+    private grpcAdapter: GRPCSrvAdapter;
 
     constructor(id: number, cm: ConsensusModule, grpcAdapter: GRPCSrvAdapter) {
-        this._nodeId = id;
-        this._cm = cm;
-        this._grpcAdapter = grpcAdapter;
+        this.nodeId = id;
+        this.cm = cm;
+        this.grpcAdapter = grpcAdapter;
     }
 
-    _logInfo(msg: string): void {
-        logger.info('Server ' + this._nodeId + ': ' + msg);
+    logInfo(msg: string): void {
+        logger.info('Server ' + this.nodeId + ': ' + msg);
     }
 
-    _logError(msg: string): void {
-        logger.error('Server' + this._nodeId + ': ' + msg);
+    logError(msg: string): void {
+        logger.error('Server' + this.nodeId + ': ' + msg);
+    }
+
+    getState() {
+        return this.cm.getCurrentState();
+    }
+
+    getCurrentTerm() {
+        return this.cm.getCurrentTerm();
+    }
+
+    getHeartbeatTimeout() {
+        return this.cm.getHeartbeatTimeout();
+    }
+
+    shutdown() {
+        this.grpcAdapter.shutDown();
+        this.cm.shutdown();
     }
 }
 

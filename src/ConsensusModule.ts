@@ -3,6 +3,7 @@ import { LogStore } from './LogStore';
 import { Peer } from './Peer';
 import { IAppendRequest, IAppendResponse, IVoteRequest, IVoteResponse } from './validators/validators';
 import { GRPCClientAdapter } from './adapters/GRPCClientAdapter';
+import { ConfigOptions } from './interfaces/ConfigOptions';
 
 enum NodeState {
     FOLLOWER = 'FOLLOWER',
@@ -10,9 +11,9 @@ enum NodeState {
     LEADER = 'LEADER'
 }
 
-
-
 class ConsensusModule {
+    private HEARTBEAT_TIMEOUT: number;
+    private ELECTION_TIMEOUT: number;
     private serverId: number;
     private heartbeatTimeout: any;
     private heartbeatSenderTimeout: any;
@@ -20,8 +21,6 @@ class ConsensusModule {
     private maxElectionRetry: number;
     private nodeState: NodeState;
     private peers: Peer[];
-
-
 
     // Persistent state (Should be updated on stable storage before replying to RPC)
     currentTerm: number; // latest term seen by server
@@ -34,9 +33,11 @@ class ConsensusModule {
     private matchIndex: Map<any, any>; // for each server, index of highest entry known to be replicated [0,)
 
 
-    constructor(id: number, peers: Peer[]) {
+    constructor(id: number, peers: Peer[], opts: ConfigOptions) {
+        this.HEARTBEAT_TIMEOUT = opts.heartbeatTimeout;
+        this.ELECTION_TIMEOUT = opts.electionTimeout;
         this.serverId = id;
-        this.nodeState = NodeState.FOLLOWER;
+        this.nodeState = opts.initialState;
         this.peers = peers;
         this.electionTimeout = -1;
         this.maxElectionRetry = 10;
@@ -47,16 +48,21 @@ class ConsensusModule {
         this.logStore = new LogStore(this.serverId);
         this.nextIndex = new Map();
         this.matchIndex = new Map();
-        this.resetHeartbeatTimeout();
         this.currentTerm = 0;
         this.peerClients = new Map<number, GRPCClientAdapter>();
+        this.resetHeartbeatTimeout();
+
+
     }
 
+
+    getHeartbeatTimeout() {
+        return this.HEARTBEAT_TIMEOUT;
+    }
 
     getCurrentState(): NodeState {
         return this.nodeState;
     }
-
 
     getId(): number {
         return this.serverId;
@@ -77,6 +83,7 @@ class ConsensusModule {
         logger.error('Server' + this.serverId + ': ' + msg);
     }
 
+
     getCurrentParameters() {
         return {
             currentTerm: this.currentTerm,
@@ -84,6 +91,14 @@ class ConsensusModule {
             currentState: this.nodeState
         }
     }
+
+
+    shutdown() {
+        clearTimeout(this.electionTimeout)
+        clearTimeout(this.heartbeatTimeout);
+        this.teardownPeerClients();
+    }
+
 
     setupPeerClients() {
         this.peers.forEach(peer => {
@@ -94,24 +109,23 @@ class ConsensusModule {
         });
     }
 
-    /**
-     * Timer which waits for Leader Heartbeat, while server is in FOLLOWER state.
-     * On timeout, state change to CANDIDATE and leader-election is initiated
-     */
+    teardownPeerClients() {
+        for (let peer of Array.from(this.peerClients.values())) {
+            peer.close();
+        }
+    }
+
+
     resetElectionTimeout() {
-        const threshold = process.env.ELECTIONTIMEOUT ? parseInt(process.env.ELECTIONTIMEOUT) : 1000;
+        const threshold = this.ELECTION_TIMEOUT;
         this.electionTimeout = setTimeout(() => {
             this.resetElectionTimeout();
         }, threshold);
     }
 
 
-    /**
-     * Timer which waits for Leader Heartbeat, while server is in FOLLOWER state.
-     * On timeout, state change to CANDIDATE and leader-election is initiated
-     */
     resetHeartbeatTimeout() {
-        const threshold = process.env.HEARTBEATTIMEOUT ? parseInt(process.env.HEARTBEATTIMEOUT) : 2000;
+        const threshold = this.HEARTBEAT_TIMEOUT;
 
         clearTimeout(this.heartbeatTimeout);
         this.heartbeatTimeout = setTimeout(() => {
@@ -123,7 +137,7 @@ class ConsensusModule {
         }, threshold);
     }
 
-    // TODO: Move to RaftNode
+
     async sendHeartbeats() {
         this.logInfo('Sending heartbeats to all peers');
         let counter = 0
@@ -146,6 +160,7 @@ class ConsensusModule {
                     this.logInfo('Received result: ' + JSON.stringify(result));
                     counter += 1;
                     if (counter === this.peers.length) {
+                        // TODO: replace timeout value with variable
                         this.heartbeatSenderTimeout = setTimeout(() => this.sendHeartbeats(), 1000);
                     }
                 }
@@ -158,7 +173,7 @@ class ConsensusModule {
 
     }
 
-    // Todo: Edit for consensus module
+
     async processHeartbeats(leaderId: number, term: number): Promise<boolean> {
         try {
             if (this.nodeState === NodeState.FOLLOWER) {
@@ -188,7 +203,6 @@ class ConsensusModule {
     }
 
 
-    // Todo: refactor for consensus module
     voteRequestHandler(request: IVoteRequest): IVoteResponse {
 
         const response: IVoteResponse = {
@@ -216,7 +230,6 @@ class ConsensusModule {
     }
 
 
-    // Todo: refactor for consensus module
     async appendEntriesHandler(request: IAppendRequest): Promise<IAppendResponse> {
 
         const response: IAppendResponse = {
@@ -243,7 +256,7 @@ class ConsensusModule {
 
     }
 
-    // Todo: Re
+
     initiateLeaderState() {
         this.nodeState = NodeState.LEADER;
 
@@ -273,7 +286,7 @@ class ConsensusModule {
         //TODO: Make this equal self id and randomize heartbeat timeouts to prevent deadlock elections.
         this.votedFor = null;
         const voteCount = [1];
-        this.electionTimeout = setTimeout(() => this.conductLeaderElection(), 2000);
+        this.electionTimeout = setTimeout(() => this.conductLeaderElection(), this.ELECTION_TIMEOUT);
         try {
             for (let peer of Array.from(this.peerClients.entries())) {
                 const client = peer[1];
@@ -283,28 +296,24 @@ class ConsensusModule {
                     lastLogIndex: this.logStore.getCommitIndex(),
                     lastLogTerm: 0
                 };
-                client.requestVote(request).then(result => {
-                    if (result.term > this.currentTerm) {
-                        this.logInfo('VoteRequestRPC Reply has term greater than current term. Becoming Follower');
-                        this.currentTerm = result.term;
-                        this.prevTerm = result.term;
-                        clearTimeout(this.electionTimeout);
-                        this.nodeState = NodeState.FOLLOWER;
-                        return;
-                    }
-                    if (result.voteGranted === true) {
-                        voteCount[0] += 1;
-                    }
-                    if (2 * voteCount[0] > (this.peers.length + 1)) {
-                        clearTimeout(this.electionTimeout);
-                        this.initiateLeaderState();
-                        this.logInfo('Won the election');
-                        return;
-                    }
-
-                }).catch((err) => {
-                    this.logError('Received Error in gRPC Reply' + err);
-                });
+                const result: IVoteResponse = await client.requestVote(request)
+                if (result.term > this.currentTerm) {
+                    this.logInfo('VoteRequestRPC Reply has term greater than current term. Becoming Follower');
+                    this.currentTerm = result.term;
+                    this.prevTerm = result.term;
+                    clearTimeout(this.electionTimeout);
+                    this.nodeState = NodeState.FOLLOWER;
+                    return;
+                }
+                if (result.voteGranted === true) {
+                    voteCount[0] += 1;
+                }
+                if (2 * voteCount[0] > (this.peers.length + 1)) {
+                    clearTimeout(this.electionTimeout);
+                    this.initiateLeaderState();
+                    this.logInfo('Won the election');
+                    return;
+                }
             };
         } catch (err) {
             this.logError('Error while conducting election: ' + err);

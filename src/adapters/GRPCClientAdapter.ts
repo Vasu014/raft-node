@@ -41,6 +41,10 @@ class GRPCClientAdapter {
             });
         });
     }
+
+    close() {
+        this.grpcClient.close();
+    }
 }
 
 export { GRPCClientAdapter };
