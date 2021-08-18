@@ -12,6 +12,15 @@ class RaftNode {
         this.nodeId = id;
         this.cm = cm;
         this.grpcAdapter = grpcAdapter;
+        //this.grpcAdapter.initializeServer();
+    }
+
+    async startGrpc() {
+        try {
+            const response = await this.grpcAdapter.initializeServer();
+        } catch (err) {
+            logger.error('Error while trying to start grpc: ' + err);
+        }
     }
 
     logInfo(msg: string): void {
@@ -34,9 +43,14 @@ class RaftNode {
         return this.cm.getHeartbeatTimeout();
     }
 
-    shutdown() {
-        this.grpcAdapter.shutDown();
-        this.cm.shutdown();
+    async shutdown() {
+        try {
+            const res = this.grpcAdapter.shutDown();
+            this.cm.shutdown();
+        } catch (err) {
+
+        }
+
     }
 }
 

@@ -11,7 +11,7 @@ class RaftFactory {
         const server = serverList.filter(server => server.id === serverId)[0];
 
         const cm = new ConsensusModule(serverId, peers, opts);
-        const grpcAdapter = new GRPCSrvAdapter(cm, server.id);
+        const grpcAdapter = new GRPCSrvAdapter(cm, server.id, server.addr);
         const raftNode = new RaftNode(serverId, cm, grpcAdapter);
         return raftNode;
     }

@@ -2,7 +2,8 @@
 import * as grpc from "@grpc/grpc-js";
 import { logger } from './../logger/Logger';
 import { loadedPackageDefinition } from './../package/definition';
-import { AppendRequestRPC, IAppendRequest, IAppendResponse, RequestVoteRPC, ResponseVoteRPC, IVoteRequest, IVoteResponse } from './../validators/validators';
+import { AppendRequestRPC, RequestVoteRPC, ResponseVoteRPC, ResponseAppendRPC } from './../validators/validators';
+import { IAppendRequest, IAppendResponse, IVoteRequest, IVoteResponse } from './../interfaces/Rpc';
 import { RaftServiceClient } from "./../grpc-js/proto/raft/RaftService";
 
 
@@ -19,7 +20,7 @@ class GRPCClientAdapter {
                 if (err) {
                     return reject(err);
                 }
-                const { error, value } = RequestVoteRPC.validate(response);
+                const { error, value } = ResponseVoteRPC.validate(response);
                 const reply: IVoteResponse = value;
                 return resolve(reply);
             });
@@ -32,7 +33,7 @@ class GRPCClientAdapter {
                 if (err) {
                     return reject(err);
                 }
-                const { error, value } = AppendRequestRPC.validate(response);
+                const { error, value } = ResponseAppendRPC.validate(response);
                 if (error) {
                     return reject(error);
                 }

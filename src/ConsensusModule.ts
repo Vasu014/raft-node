@@ -1,7 +1,7 @@
 import { logger } from './logger/Logger';
 import { LogStore } from './LogStore';
 import { Peer } from './Peer';
-import { IAppendRequest, IAppendResponse, IVoteRequest, IVoteResponse } from './validators/validators';
+import { IAppendRequest, IAppendResponse, IVoteRequest, IVoteResponse } from './interfaces/Rpc';
 import { GRPCClientAdapter } from './adapters/GRPCClientAdapter';
 import { ConfigOptions } from './interfaces/ConfigOptions';
 
@@ -42,17 +42,15 @@ class ConsensusModule {
         this.electionTimeout = -1;
         this.maxElectionRetry = 10;
         this.heartbeatTimeout = -1;
-        this.currentTerm = 0;
+        this.currentTerm = opts.currentTerm;
         this.prevTerm = 0;
-        this.votedFor = null;
+        this.votedFor = opts.votedFor;
         this.logStore = new LogStore(this.serverId);
         this.nextIndex = new Map();
         this.matchIndex = new Map();
         this.currentTerm = 0;
         this.peerClients = new Map<number, GRPCClientAdapter>();
         this.resetHeartbeatTimeout();
-
-
     }
 
 
